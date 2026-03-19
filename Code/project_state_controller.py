@@ -16,21 +16,51 @@ class ProjectStateController:
         entry.delete(0, tk.END)
         entry.insert(0, str(value))
 
-    def collect_project_state(self):
+    def _to_portable_path(self, path_value, project_file_path):
+        path_text = str(path_value or "").strip()
+        if not path_text:
+            return ""
+        if not project_file_path:
+            return os.path.normpath(path_text)
+
+        base_dir = os.path.dirname(os.path.abspath(project_file_path))
+        normalized = os.path.normpath(path_text)
+        if not os.path.isabs(normalized):
+            return normalized
+
+        try:
+            relative = os.path.relpath(normalized, base_dir)
+            return os.path.normpath(relative)
+        except ValueError:
+            return normalized
+
+    def _resolve_project_path(self, path_value, project_file_path):
+        path_text = str(path_value or "").strip()
+        if not path_text:
+            return ""
+
+        normalized = os.path.normpath(path_text)
+        if os.path.isabs(normalized) or not project_file_path:
+            return normalized
+
+        base_dir = os.path.dirname(os.path.abspath(project_file_path))
+        return os.path.normpath(os.path.join(base_dir, normalized))
+
+    def collect_project_state(self, project_file_path=None):
         app = self.app
         return {
             "project_version": 1,
             "saved_at": datetime.now().isoformat(timespec="seconds"),
-            "video_path": app.video_path.get().strip(),
-            "output_dir": app.output_dir.get().strip(),
+            "video_path": self._to_portable_path(app.video_path.get().strip(), project_file_path),
+            "output_dir": self._to_portable_path(app.output_dir.get().strip(), project_file_path),
             "output_name": app.output_name_entry.get().strip(),
             "threshold_output_name": app.threshold_output_name_var.get().strip(),
             "save_analysis_output": bool(app.save_analysis_output_var.get()),
             "analysis_output_format": app.analysis_output_format_var.get().strip(),
-            "analysis_output_path": app.analysis_output_path_var.get().strip(),
+            "analysis_output_path": self._to_portable_path(app.analysis_output_path_var.get().strip(), project_file_path),
             "save_threshold_output": bool(app.save_threshold_output_var.get()),
             "threshold_output_format": app.threshold_output_format_var.get().strip(),
-            "threshold_output_path": app.threshold_output_path_var.get().strip(),
+            "threshold_output_path": self._to_portable_path(app.threshold_output_path_var.get().strip(), project_file_path),
             "threshold_offset": str(app.threshold_offset_var.get()).strip(),
             "pixels_per_col": app.pixel_entry.get().strip(),
             "stdevs": app.stdev_entry.get().strip(),
@@ -74,7 +104,7 @@ class ProjectStateController:
         )
         if not file_path:
             return
-        state = self.collect_project_state()
+        state = self.collect_project_state(file_path)
         try:
             with open(file_path, "w", encoding="utf-8") as handle:
                 json.dump(state, handle, indent=2)
@@ -83,12 +113,12 @@ class ProjectStateController:
         except OSError as exc:
             messagebox.showerror("Save failed", f"Could not save project:\n{exc}")
 
-    def apply_project_state(self, state):
+    def apply_project_state(self, state, project_file_path=None):
         app = self.app
         if not isinstance(state, dict):
             raise ValueError("Invalid project file format.")
 
-        video_path = str(state.get("video_path", "")).strip()
+        video_path = self._resolve_project_path(state.get("video_path", ""), project_file_path)
         if video_path and os.path.isfile(video_path):
             app.load_video(video_path)
         elif video_path:
@@ -99,19 +129,19 @@ class ProjectStateController:
             app.video_path.set(video_path)
             app.video_label.config(text=os.path.basename(video_path) or "No video selected")
 
-        app.output_dir.set(str(state.get("output_dir", app.output_dir.get())).strip())
+        app.output_dir.set(self._resolve_project_path(state.get("output_dir", app.output_dir.get()), project_file_path))
         self._set_entry_text(app.output_name_entry, state.get("output_name", app.output_name_entry.get()))
         app.threshold_output_name_var.set(str(state.get("threshold_output_name", app.threshold_output_name_var.get())).strip())
         app.save_analysis_output_var.set(bool(state.get("save_analysis_output", app.save_analysis_output_var.get())))
         analysis_format = str(state.get("analysis_output_format", app.analysis_output_format_var.get())).strip()
         if analysis_format in app.analysis_output_format_combo.cget("values"):
             app.analysis_output_format_var.set(analysis_format)
-        app.analysis_output_path_var.set(str(state.get("analysis_output_path", app.analysis_output_path_var.get())).strip())
+        app.analysis_output_path_var.set(self._resolve_project_path(state.get("analysis_output_path", app.analysis_output_path_var.get()), project_file_path))
         app.save_threshold_output_var.set(bool(state.get("save_threshold_output", app.save_threshold_output_var.get())))
         threshold_format = str(state.get("threshold_output_format", app.threshold_output_format_var.get())).strip()
         if threshold_format in app.threshold_output_format_combo.cget("values"):
             app.threshold_output_format_var.set(threshold_format)
-        app.threshold_output_path_var.set(str(state.get("threshold_output_path", app.threshold_output_path_var.get())).strip())
+        app.threshold_output_path_var.set(self._resolve_project_path(state.get("threshold_output_path", app.threshold_output_path_var.get()), project_file_path))
         app.update_output_path_defaults(force=False)
         try:
             threshold_val = int(state.get("threshold_offset", app.threshold_offset_var.get()))
@@ -228,7 +258,7 @@ class ProjectStateController:
         try:
             with open(file_path, "r", encoding="utf-8") as handle:
                 state = json.load(handle)
-            self.apply_project_state(state)
+            self.apply_project_state(state, project_file_path=file_path)
             app.project_path = file_path
             messagebox.showinfo("Project loaded", f"Loaded project from:\n{file_path}")
         except (OSError, json.JSONDecodeError, ValueError) as exc:
@@ -250,7 +280,7 @@ class ProjectStateController:
             try:
                 with open(file_path, "r", encoding="utf-8") as handle:
                     state = json.load(handle)
-                self.apply_project_state(state)
+                self.apply_project_state(state, project_file_path=file_path)
                 app.project_path = file_path
                 return
             except (OSError, json.JSONDecodeError, ValueError):

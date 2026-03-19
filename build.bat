@@ -47,6 +47,13 @@ if not exist "dist\JetAnalyzer\projects" mkdir "dist\JetAnalyzer\projects"
 xcopy /Y /I "projects\*" "dist\JetAnalyzer\projects\" >nul
 echo   Copied projects\
 
+:: Copy example videos so relative sample-project paths work on other computers
+if exist "Example Videos" (
+    if not exist "dist\JetAnalyzer\Example Videos" mkdir "dist\JetAnalyzer\Example Videos"
+    xcopy /Y /I /E "Example Videos\*" "dist\JetAnalyzer\Example Videos\" >nul
+    echo   Copied Example Videos\
+)
+
 echo [4/4] Done.
 echo.
 echo Output folder:  dist\JetAnalyzer\

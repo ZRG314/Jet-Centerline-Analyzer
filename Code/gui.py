@@ -115,6 +115,32 @@ def get_app_settings_path():
     return os.path.join(_get_app_dir(), APP_SETTINGS_FILENAME)
 
 
+def _to_portable_app_path(path_value):
+    path_text = str(path_value or "").strip()
+    if not path_text:
+        return ""
+
+    normalized = os.path.normpath(path_text)
+    if not os.path.isabs(normalized):
+        return normalized
+
+    try:
+        return os.path.normpath(os.path.relpath(normalized, _get_app_dir()))
+    except ValueError:
+        return normalized
+
+
+def _resolve_app_path(path_value):
+    path_text = str(path_value or "").strip()
+    if not path_text:
+        return ""
+
+    normalized = os.path.normpath(path_text)
+    if os.path.isabs(normalized):
+        return normalized
+    return os.path.normpath(os.path.join(_get_app_dir(), normalized))
+
+
 def normalize_app_defaults(saved_defaults):
     merged = copy.deepcopy(DEFAULTS)
     if not isinstance(saved_defaults, dict):
@@ -200,15 +226,22 @@ def load_app_defaults():
     try:
         with open(settings_path, "r", encoding="utf-8") as handle:
             data = json.load(handle)
-        return normalize_app_defaults(data)
+        normalized = normalize_app_defaults(data)
+        for key in ("output_dir", "analysis_output_path", "threshold_output_path"):
+            normalized[key] = _resolve_app_path(normalized.get(key, ""))
+        return normalized
     except (OSError, json.JSONDecodeError, TypeError, ValueError):
         return copy.deepcopy(DEFAULTS)
 
 
 def save_app_defaults(defaults_dict):
     settings_path = get_app_settings_path()
+    normalized = normalize_app_defaults(defaults_dict)
+    portable = copy.deepcopy(normalized)
+    for key in ("output_dir", "analysis_output_path", "threshold_output_path"):
+        portable[key] = _to_portable_app_path(portable.get(key, ""))
     with open(settings_path, "w", encoding="utf-8") as handle:
-        json.dump(normalize_app_defaults(defaults_dict), handle, indent=2)
+        json.dump(portable, handle, indent=2)
 
 # ======================================================
 # Main GUI
@@ -401,10 +434,13 @@ class JetAnalysisGUI:
         self.refresh_run_state()
         base_dir = os.path.dirname(__file__)
         default_video_candidates = [
-            os.path.join(base_dir, "..", "Input Videos", "slo_mo.mp4"),
-            os.path.join(base_dir, "Input Videos", "slo_mo.mp4"),
-            os.path.join(os.getcwd(), "Input Videos", "slo_mo.mp4"),
-            os.path.join(os.getcwd(), "slo_mo.mp4"),
+            os.path.join(base_dir, "..", "Example Videos", "example_input.mp4"),
+            os.path.join(base_dir, "Example Videos", "example_input.mp4"),
+            os.path.join(os.getcwd(), "Example Videos", "example_input.mp4"),
+            os.path.join(base_dir, "..", "Input Videos", "example_input.mp4"),
+            os.path.join(base_dir, "Input Videos", "example_input.mp4"),
+            os.path.join(os.getcwd(), "Input Videos", "example_input.mp4"),
+            os.path.join(os.getcwd(), "example_input.mp4"),
         ]
         for default_video in default_video_candidates:
             default_video = os.path.normpath(default_video)

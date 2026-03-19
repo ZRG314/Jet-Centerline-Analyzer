@@ -1,8 +1,8 @@
 {
   "project_version": 1,
   "saved_at": "2026-02-26T15:09:13",
-  "video_path": "C:/Users/zrg31/OneDrive - Cedarville University/Cedarville/Classes/7 - Fall 2025/Senior Design/Jet Analyzer Program/Input Videos/slo_mo.mp4",
-  "output_dir": "C:/Users/zrg31/OneDrive - Cedarville University/Cedarville/Classes/7 - Fall 2025/Senior Design/Jet Analyzer Program/Input Videos",
+  "video_path": "..\\Example Videos\\example_input.mp4",
+  "output_dir": "..\\Example Videos",
   "output_name": "analysis_output",
   "threshold_offset": "17",
   "pixels_per_col": "3",

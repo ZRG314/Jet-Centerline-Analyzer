@@ -476,7 +476,7 @@ if __name__ == "__main__":
         show_confidence=True,
         confidence_mode="band",
         show_progress=False,
-        input_video_path="slo_mo.mp4",
+        input_video_path="example_input.mp4",
         output_analysis_path="slow_results/slow_analysis.avi"
     )
 
