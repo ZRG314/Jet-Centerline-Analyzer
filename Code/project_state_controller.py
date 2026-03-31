@@ -127,7 +127,7 @@ class ProjectStateController:
                 f"Saved video path does not exist:\n{video_path}\n\nOther settings will still be loaded.",
             )
             app.video_path.set(video_path)
-            app.video_label.config(text=os.path.basename(video_path) or "No video selected")
+            app.video_label.configure(text=os.path.basename(video_path) or "No video selected")
 
         app.output_dir.set(self._resolve_project_path(state.get("output_dir", app.output_dir.get()), project_file_path))
         self._set_entry_text(app.output_name_entry, state.get("output_name", app.output_name_entry.get()))
@@ -180,10 +180,10 @@ class ProjectStateController:
         app.graph_unit_label = unit_label
         app.graph_unit_scale = unit_scale
         if unit_label == "px":
-            app.graph_units_label.config(text="Units: px (uncalibrated)")
+            app.graph_units_label.configure(text="Units: px (uncalibrated)")
             app.calibration_status_var.set("Calibration: not set")
         else:
-            app.graph_units_label.config(text=f"Units: {unit_label} | Scale: {app.graph_unit_scale:.6g} {unit_label}/px")
+            app.graph_units_label.configure(text=f"Units: {unit_label} | Scale: {app.graph_unit_scale:.6g} {unit_label}/px")
             app.calibration_status_var.set(f"Calibration loaded: {app.graph_unit_scale:.6g} {unit_label}/px")
 
         cal_line = state.get("calibration_line_img")
@@ -203,7 +203,7 @@ class ProjectStateController:
 
         app.crop_mode = False
         app.canvas.delete("crop_box")
-        app.save_crop_button.config(state="disabled")
+        app.save_crop_button.configure(state="disabled")
         if app.total_frames > 0 and app.original_crop_frame is not None:
             h, w = app.original_crop_frame.shape[:2]
             left = int(state.get("crop_left", app.crop_left))

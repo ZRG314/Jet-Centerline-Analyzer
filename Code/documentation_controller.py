@@ -3,6 +3,7 @@
 import os
 import tkinter as tk
 from tkinter import messagebox
+import customtkinter as ctk
 
 
 class DocumentationController:
@@ -16,9 +17,10 @@ class DocumentationController:
             app.doc_window.focus_force()
             return
 
-        app.doc_window = tk.Toplevel(app.root)
+        app.doc_window = ctk.CTkToplevel(app.root)
         app.doc_window.title("Application Documentation")
         app.doc_window.geometry("1200x900")
+        app.doc_window.configure(fg_color="#eef3f9")
         try:
             app.doc_window.state("zoomed")
         except tk.TclError:
@@ -27,26 +29,45 @@ class DocumentationController:
         app.doc_window.protocol("WM_DELETE_WINDOW", app.close_documentation_page)
         app.doc_window.bind("<Escape>", lambda _event: app.close_documentation_page())
 
-        top_bar = tk.Frame(app.doc_window)
+        top_bar = ctk.CTkFrame(app.doc_window, fg_color="#ffffff", corner_radius=14, border_width=1, border_color="#d5deea")
         top_bar.pack(fill="x", padx=10, pady=8)
 
-        tk.Label(top_bar, text=f"Viewing: {os.path.basename(app.doc_path)}", fg="gray30").pack(side="left")
-        tk.Button(top_bar, text="Close", command=app.close_documentation_page).pack(side="right")
+        ctk.CTkLabel(top_bar, text=f"Viewing: {os.path.basename(app.doc_path)}", text_color="#5f7086").pack(side="left", padx=12, pady=10)
+        ctk.CTkButton(
+            top_bar,
+            text="Close",
+            command=app.close_documentation_page,
+            fg_color="#edf2f8",
+            hover_color="#e2eaf4",
+            text_color="#10233d",
+            corner_radius=10,
+        ).pack(side="right", padx=12, pady=10)
 
-        editor_frame = tk.Frame(app.doc_window)
+        editor_frame = ctk.CTkFrame(app.doc_window, fg_color="#ffffff", corner_radius=14, border_width=1, border_color="#d5deea")
         editor_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
-        scroll = tk.Scrollbar(editor_frame)
+        scroll = ctk.CTkScrollbar(editor_frame)
         scroll.pack(side="right", fill="y")
 
-        app.doc_text_widget = tk.Text(editor_frame, wrap="word", undo=True, yscrollcommand=scroll.set)
+        app.doc_text_widget = tk.Text(
+            editor_frame,
+            wrap="word",
+            undo=True,
+            yscrollcommand=scroll.set,
+            bg="#f8fbff",
+            fg="#10233d",
+            relief="flat",
+            borderwidth=0,
+            padx=16,
+            pady=16,
+        )
         app.doc_text_widget.pack(fill="both", expand=True)
-        scroll.config(command=app.doc_text_widget.yview)
+        scroll.configure(command=app.doc_text_widget.yview)
 
         text = self.load_documentation_text()
         app.doc_text_widget.delete("1.0", tk.END)
         app.doc_text_widget.insert("1.0", text)
-        app.doc_text_widget.config(state="disabled")
+        app.doc_text_widget.configure(state="disabled")
 
     def load_documentation_text(self):
         app = self.app

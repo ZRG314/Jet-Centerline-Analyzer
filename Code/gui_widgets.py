@@ -1,11 +1,12 @@
 """Reusable custom Tkinter widgets shared by the GUI."""
 
 import tkinter as tk
+import customtkinter as ctk
 
 
 class RangeSlider(tk.Canvas):
     def __init__(self, parent, min_val, max_val, width=300, height=60, command=None):
-        super().__init__(parent, width=width, height=height, bg="white", highlightthickness=0)
+        super().__init__(parent, width=width, height=height, bg="#f7f9fc", highlightthickness=0)
         self.min_val = min_val
         self.max_val = max_val
         self.command = command
@@ -39,15 +40,15 @@ class RangeSlider(tk.Canvas):
 
     def draw(self):
         self.delete("all")
-        self.create_line(self.pad, self.line_y, self.width - self.pad, self.line_y, width=4, fill="gray")
+        self.create_line(self.pad, self.line_y, self.width - self.pad, self.line_y, width=6, fill="#d4dde8")
 
         x1 = self.value_to_pos(self.start_val)
         x2 = self.value_to_pos(self.end_val)
 
-        self.create_line(x1, self.line_y, x2, self.line_y, width=6, fill="blue")
+        self.create_line(x1, self.line_y, x2, self.line_y, width=7, fill="#1f6feb")
 
-        self.create_oval(x1 - 8, self.line_y - 8, x1 + 8, self.line_y + 8, fill="red")
-        self.create_oval(x2 - 8, self.line_y - 8, x2 + 8, self.line_y + 8, fill="red")
+        self.create_oval(x1 - 9, self.line_y - 9, x1 + 9, self.line_y + 9, fill="#ffffff", outline="#1f6feb", width=3)
+        self.create_oval(x2 - 9, self.line_y - 9, x2 + 9, self.line_y + 9, fill="#ffffff", outline="#1f6feb", width=3)
 
     def click(self, event):
         if not self.enabled:
@@ -144,21 +145,21 @@ class HoverTooltip:
         x = self.widget.winfo_pointerx() + 14
         y = self.widget.winfo_pointery() + 14
 
-        self.tip_window = tk.Toplevel(self.widget)
+        self.tip_window = ctk.CTkToplevel(self.widget)
         self.tip_window.wm_overrideredirect(True)
         try:
             self.tip_window.wm_attributes("-topmost", True)
         except tk.TclError:
             pass
 
-        label = tk.Label(
+        label = ctk.CTkLabel(
             self.tip_window,
             text=self.text,
             justify="left",
             wraplength=320,
-            bg="#fffde7",
-            relief="solid",
-            borderwidth=1,
+            fg_color="#10233d",
+            text_color="#f8fbff",
+            corner_radius=10,
             padx=8,
             pady=6,
         )

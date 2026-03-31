@@ -259,7 +259,7 @@ class GraphController:
             suggested_bounds_var.set(f"Suggested min: {suggested_min_text}\nSuggested max: {suggested_max_text}")
 
             if suggested_min is not None and suggested_max is not None:
-                use_suggested_button.config(
+                use_suggested_button.configure(
                     state="normal",
                     command=lambda min_text=suggested_min_text, max_text=suggested_max_text: (
                         bound_min_var.set(min_text),
@@ -267,7 +267,7 @@ class GraphController:
                     ),
                 )
             else:
-                use_suggested_button.config(state="disabled", command=lambda: None)
+                use_suggested_button.configure(state="disabled", command=lambda: None)
 
         def on_save():
             cleaned_min = self._clean_axis_bound_text(bound_min_var.get(), f"{axis_name} axis minimum")
@@ -334,8 +334,8 @@ class GraphController:
     def _bind_graph_edit_action(self, tag, callback):
         canvas = self.app.graph_canvas
         canvas.tag_bind(tag, "<Button-1>", lambda _event: callback())
-        canvas.tag_bind(tag, "<Enter>", lambda _event: canvas.config(cursor="hand2"))
-        canvas.tag_bind(tag, "<Leave>", lambda _event: canvas.config(cursor=""))
+        canvas.tag_bind(tag, "<Enter>", lambda _event: canvas.configure(cursor="hand2"))
+        canvas.tag_bind(tag, "<Leave>", lambda _event: canvas.configure(cursor=""))
 
     def _clear_graph_edit_action(self, tag):
         canvas = self.app.graph_canvas
@@ -479,22 +479,28 @@ class GraphController:
 
         def set_entry_enabled(widget, enabled):
             if widget is not None:
-                widget.config(state=("normal" if enabled else "disabled"))
+                widget.configure(state=("normal" if enabled else "disabled"))
 
         def set_combo_enabled(widget, enabled):
             if widget is not None:
-                widget.config(state=("readonly" if enabled else "disabled"))
+                widget.configure(state=("readonly" if enabled else "disabled"))
 
-        def set_label_enabled(widget, enabled, disabled_fg="gray55"):
+        def set_label_enabled(widget, enabled, disabled_fg="gray55", enabled_fg="black"):
             if widget is not None:
-                widget.config(fg=("black" if enabled else disabled_fg))
+                try:
+                    widget.configure(text_color=(enabled_fg if enabled else disabled_fg))
+                except Exception:
+                    widget.configure(fg=(enabled_fg if enabled else disabled_fg))
 
         def set_header_enabled(header_row, enabled):
             if header_row is None:
                 return
             for child in header_row.winfo_children():
-                if isinstance(child, tk.Label):
-                    child.config(fg=("black" if enabled else "gray55"))
+                try:
+                    child.configure(text_color=("black" if enabled else "gray55"))
+                except Exception:
+                    if isinstance(child, tk.Label):
+                        child.configure(fg=("black" if enabled else "gray55"))
 
         distribution_controls_enabled = not profile_mode
         histogram_scope_enabled = not (profile_mode or qq_mode)
@@ -510,15 +516,15 @@ class GraphController:
         set_label_enabled(getattr(app, "graph_distribution_bins_label", None), bins_enabled)
 
         if hasattr(app, "graph_distribution_column_label"):
-            app.graph_distribution_column_label.config(text=f"Selected Column ({self.column_input_suffix()})")
+            app.graph_distribution_column_label.configure(text=f"Selected Column ({self.column_input_suffix()})")
 
         single_column_mode = self.is_single_column_mode()
         column_enabled = distribution_controls_enabled and single_column_mode
         if hasattr(app, "graph_distribution_column_entry"):
-            app.graph_distribution_column_entry.config(state="normal" if column_enabled else "disabled")
+            app.graph_distribution_column_entry.configure(state="normal" if column_enabled else "disabled")
         set_label_enabled(getattr(app, "graph_distribution_column_label", None), column_enabled)
         if hasattr(app, "graph_distribution_column_bounds_label"):
-            app.graph_distribution_column_bounds_label.config(fg=("gray35" if column_enabled else "gray55"))
+            app.graph_distribution_column_bounds_label.configure(fg=("gray35" if column_enabled else "gray55"))
 
         bounds_text = "Input range: run analysis to populate bounds."
         if column_enabled:
@@ -1013,7 +1019,7 @@ class GraphController:
     def redraw_profile_graph(self):
         app = self.app
         app.graph_canvas.delete("all")
-        app.graph_canvas.config(cursor="")
+        app.graph_canvas.configure(cursor="")
         w = app.graph_canvas.winfo_width()
         h = app.graph_canvas.winfo_height()
         if w < 50 or h < 50:
@@ -1177,7 +1183,7 @@ class GraphController:
     def redraw_distribution_graph(self, mode):
         app = self.app
         app.graph_canvas.delete("all")
-        app.graph_canvas.config(cursor="")
+        app.graph_canvas.configure(cursor="")
         w = app.graph_canvas.winfo_width()
         h = app.graph_canvas.winfo_height()
         if w < 50 or h < 50:

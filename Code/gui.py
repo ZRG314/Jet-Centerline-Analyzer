@@ -1,4 +1,4 @@
-﻿"""Main Tkinter application entry point and UI coordinator.
+"""Main Tkinter application entry point and UI coordinator.
 
 Owns shared app state and delegates focused behavior to controller modules.
 """
@@ -13,6 +13,17 @@ from tkinter import filedialog, messagebox, ttk, colorchooser
 import threading
 import cv2
 import numpy as np
+try:
+    import customtkinter as ctk
+except ModuleNotFoundError as exc:
+    raise ModuleNotFoundError(
+        "customtkinter is required for the modernized UI. "
+        "Install dependencies with `python -m pip install -r ..\\requirements.txt` "
+        "when running from the Code folder, or `python -m pip install customtkinter`."
+    ) from exc
+
+# Prefer smooth cross-monitor dragging over per-monitor UI rescaling.
+ctk.deactivate_automatic_dpi_awareness()
 
 from analysis_engine import JetAnalysisConfig, process_video
 from display_controller import DisplayController
@@ -250,6 +261,25 @@ def save_app_defaults(defaults_dict):
 class JetAnalysisGUI:
 
     CORNER_SIZE = 10
+    APP_BG = "#eef3f9"
+    PANEL_BG = "#f7f9fc"
+    CARD_BG = "#ffffff"
+    BORDER_COLOR = "#d5deea"
+    TEXT_COLOR = "#10233d"
+    MUTED_TEXT_COLOR = "#5f7086"
+    ACCENT_COLOR = "#1f6feb"
+    ACCENT_HOVER = "#1858bb"
+    ACCENT_SOFT = "#dce9ff"
+    SUCCESS_SOFT = "#e6f6ed"
+    SUCCESS_TEXT = "#17643d"
+    WARNING_SOFT = "#fff4d6"
+    WARNING_TEXT = "#8a5a00"
+    ERROR_SOFT = "#fde8ea"
+    ERROR_TEXT = "#a11d2f"
+    ENTRY_BG = "#f9fbff"
+    ENTRY_BORDER = "#c8d5e6"
+    ENTRY_ERROR_BG = "#fff1f2"
+    ENTRY_ERROR_BORDER = "#d63950"
     FIELD_HELP = {
         "Threshold Offset": "Adjusts how strict thresholding is compared to the frame average. Higher values usually detect fewer pixels.",
         "Output File Name": "Base name used to auto-fill saved output file names and graph exports.",
@@ -280,8 +310,15 @@ class JetAnalysisGUI:
 
     def __init__(self, root):
         self.root = root
+        ctk.set_appearance_mode("light")
+        ctk.set_default_color_theme("blue")
         self.root.title("Jet Centerline Analyzer")
-        self.root.geometry("1200x900")
+        self.root.geometry("1360x900")
+        try:
+            self.root.minsize(1280, 900)
+        except Exception:
+            pass
+        self.configure_theme()
 
         self.app_defaults = load_app_defaults()
         self.settings_path = get_app_settings_path()
@@ -339,12 +376,20 @@ class JetAnalysisGUI:
 
         self.preview_width = 900
         self.preview_height = 600
-        self.left_panel_default_width = 380
+        self.left_panel_default_width = 470
         self.current_scale = 1
         self.x_offset = 0
         self.y_offset = 0
         self.display_w = 0
         self.display_h = 0
+        self._resize_after_id = None
+        self._pending_preview_size = None
+        self._cached_display_frame_id = None
+        self._cached_display_pil = None
+        self.canvas_image_item = None
+        self._resize_render_hold_until = 0.0
+        self._deferred_display_frame = None
+        self._resize_freeze_active = False
 
         self.crop_mode = False
         self.drag_start = None
@@ -449,64 +494,190 @@ class JetAnalysisGUI:
                 break
         self.try_auto_load_startup_project()
 
+    def configure_theme(self):
+        self.root.configure(fg_color=self.APP_BG)
+        self.ttk_style = ttk.Style(self.root)
+        try:
+            self.ttk_style.theme_use("clam")
+        except tk.TclError:
+            pass
+        self.ttk_style.configure("Modern.TNotebook", background=self.PANEL_BG, borderwidth=0, tabmargins=(0, 0, 0, 0))
+        self.ttk_style.configure(
+            "Modern.TNotebook.Tab",
+            background=self.CARD_BG,
+            foreground=self.MUTED_TEXT_COLOR,
+            borderwidth=0,
+            padding=(5, 4),
+            font=("Segoe UI Semibold", 8),
+        )
+        self.ttk_style.map(
+            "Modern.TNotebook.Tab",
+            background=[("selected", self.ACCENT_SOFT)],
+            foreground=[("selected", self.TEXT_COLOR)],
+        )
+        self.ttk_style.configure(
+            "Modern.TCombobox",
+            fieldbackground=self.CARD_BG,
+            background=self.CARD_BG,
+            foreground=self.TEXT_COLOR,
+            arrowcolor=self.MUTED_TEXT_COLOR,
+            bordercolor=self.ENTRY_BORDER,
+            lightcolor=self.CARD_BG,
+            darkcolor=self.CARD_BG,
+            padding=6,
+        )
+        self.ttk_style.map(
+            "Modern.TCombobox",
+            fieldbackground=[("readonly", self.CARD_BG)],
+            selectbackground=[("readonly", self.ACCENT_SOFT)],
+            selectforeground=[("readonly", self.TEXT_COLOR)],
+        )
+        self.ttk_style.configure(
+            "Modern.Horizontal.TProgressbar",
+            troughcolor="#dfe7f1",
+            bordercolor="#dfe7f1",
+            background=self.ACCENT_COLOR,
+            lightcolor=self.ACCENT_COLOR,
+            darkcolor=self.ACCENT_COLOR,
+        )
+
+    def create_card(self, parent, padx=0, pady=0):
+        card = ctk.CTkFrame(
+            parent,
+            fg_color=self.CARD_BG,
+            corner_radius=16,
+            border_width=1,
+            border_color=self.BORDER_COLOR,
+        )
+        card.pack(fill="x", padx=padx, pady=pady)
+        return card
+
+    def create_section_card(self, parent, title, padx=0, pady=0, compact=False):
+        card = self.create_card(parent, padx=padx, pady=pady)
+        header = ctk.CTkLabel(
+            card,
+            text=title,
+            font=("Segoe UI Semibold", 12 if compact else 13),
+            text_color=self.TEXT_COLOR,
+        )
+        header.pack(anchor="w", padx=10 if compact else 12, pady=(7, 4) if compact else (10, 6))
+        return card
+
+    def create_button(self, parent, text, command, width=None, tone="secondary", compact=False):
+        colors = {
+            "primary": (self.ACCENT_COLOR, self.ACCENT_HOVER, "#ffffff"),
+            "secondary": ("#edf2f8", "#e2eaf4", self.TEXT_COLOR),
+            "danger": ("#fbe3e6", "#f6d3d9", self.ERROR_TEXT),
+        }
+        fg_color, hover_color, text_color = colors[tone]
+        kwargs = {
+            "text": text,
+            "command": command,
+            "height": 26 if compact else 30,
+            "corner_radius": 8 if compact else 9,
+            "fg_color": fg_color,
+            "hover_color": hover_color,
+            "text_color": text_color,
+            "font": ("Segoe UI Semibold", 10 if compact else 10),
+        }
+        if width is not None:
+            kwargs["width"] = width
+        return ctk.CTkButton(
+            parent,
+            **kwargs,
+        )
+
+    def create_entry(self, parent, textvariable=None, width=None, compact=False):
+        entry = ctk.CTkEntry(
+            parent,
+            textvariable=textvariable,
+            height=28 if compact else 34,
+            corner_radius=8 if compact else 10,
+            fg_color=self.ENTRY_BG,
+            border_color=self.ENTRY_BORDER,
+            text_color=self.TEXT_COLOR,
+            font=("Segoe UI", 11 if compact else 12),
+        )
+        if width is not None:
+            entry.configure(width=width)
+        return entry
+
+    def set_entry_validation_state(self, entry, is_error):
+        if isinstance(entry, ctk.CTkEntry):
+            entry.configure(
+                fg_color=self.ENTRY_ERROR_BG if is_error else self.ENTRY_BG,
+                border_color=self.ENTRY_ERROR_BORDER if is_error else self.ENTRY_BORDER,
+            )
+        else:
+            entry.configure(bg="misty rose" if is_error else "white")
+
     # ======================================================
     # Layout
     # ======================================================
 
     def build_layout(self):
 
-        main = tk.Frame(self.root)
+        main = ctk.CTkFrame(self.root, fg_color="transparent")
         main.pack(fill="both", expand=True)
 
-        self.left_panel = tk.Frame(main)
+        self.left_panel = ctk.CTkFrame(
+            main,
+            fg_color=self.PANEL_BG,
+            corner_radius=18,
+            border_width=1,
+            border_color=self.BORDER_COLOR,
+        )
         self.left_panel.configure(width=self.left_panel_default_width)
         self.left_panel.pack_propagate(False)
-        self.left_panel.pack(side="left", fill="y", padx=10, pady=10)
+        self.left_panel.pack(side="left", fill="y", padx=8, pady=8)
 
         # ================= CONTROL BAR (TOP) =================
-        control_bar = tk.Frame(self.left_panel, relief="ridge", bd=1)
-        control_bar.pack(fill="x", padx=0, pady=(0, 10))
+        control_bar = ctk.CTkFrame(self.left_panel, fg_color=self.CARD_BG, corner_radius=14, border_width=1, border_color=self.BORDER_COLOR)
+        control_bar.pack(fill="x", padx=0, pady=(0, 6))
 
-        run_stop_row = tk.Frame(control_bar)
-        run_stop_row.pack(side="left", padx=5, pady=5)
+        run_stop_row = ctk.CTkFrame(control_bar, fg_color="transparent")
+        run_stop_row.pack(side="left", padx=4, pady=4)
 
-        self.run_button = tk.Button(
-            run_stop_row, text="Run", command=self.start_thread)
-        self.run_button.pack(side="left", padx=(0, 6))
+        self.run_button = self.create_button(
+            run_stop_row, text="Run Analysis", command=self.start_thread, width=104, tone="primary")
+        self.run_button.pack(side="left", padx=(0, 4))
 
-        self.stop_button = tk.Button(
+        self.stop_button = self.create_button(
             run_stop_row, text="Stop",
             command=self.stop_analysis,
-            state="disabled"
+            width=84,
+            tone="danger",
         )
+        self.stop_button.configure(state="disabled")
         self.stop_button.pack(side="left")
         
-        self.status_badge = tk.Label(
+        self.status_badge = ctk.CTkLabel(
             run_stop_row,
             textvariable=self.status_var,
-            bg="#eceff1",
-            fg="#37474f",
-            relief="groove",
-            bd=1,
+            fg_color="#edf2f8",
+            text_color=self.TEXT_COLOR,
+            corner_radius=999,
             padx=8,
-            pady=2
+            pady=4,
+            font=("Segoe UI Semibold", 10),
         )
-        self.status_badge.pack(side="left", padx=(10, 6))
+        self.status_badge.pack(side="left", padx=(6, 4))
 
         self.progress = ttk.Progressbar(
-            run_stop_row, length=100, mode="determinate")
+            run_stop_row, length=95, mode="determinate", style="Modern.Horizontal.TProgressbar")
         self.progress.pack(side="left")
 
         # Progress and stats on the right
-        stats_row = tk.Frame(control_bar)
-        stats_row.pack(side="right", padx=5, pady=5)
+        stats_row = ctk.CTkFrame(control_bar, fg_color="transparent")
+        stats_row.pack(side="right", padx=4, pady=4)
 
-        self.time_label = tk.Label(
+        self.time_label = ctk.CTkLabel(
             stats_row,
             text="0.00s | 0/0",
-            font=("TkDefaultFont", 8),
+            font=("Segoe UI", 10),
             anchor="w",
-            justify="left"
+            justify="left",
+            text_color=self.MUTED_TEXT_COLOR,
         )
         self.time_label.pack(side="left")
 
@@ -525,16 +696,16 @@ class JetAnalysisGUI:
         self.canvas.bind("<ButtonRelease-3>", self.on_right_mouse_up)
         self.canvas.bind("<MouseWheel>", self.on_calibration_mouse_wheel)
 
-        self.notebook = ttk.Notebook(self.left_panel)
+        self.notebook = ttk.Notebook(self.left_panel, style="Modern.TNotebook")
         self.notebook.pack(fill="both", expand=True)
 
-        basic_tab = tk.Frame(self.notebook)
-        self.threshold_tab = tk.Frame(self.notebook)
-        advanced_tab = tk.Frame(self.notebook)
-        self.crop_tab = tk.Frame(self.notebook)
-        self.calibration_tab = tk.Frame(self.notebook)
-        self.graph_tab = tk.Frame(self.notebook)
-        self.settings_tab = tk.Frame(self.notebook)
+        basic_tab = tk.Frame(self.notebook, bg=self.PANEL_BG)
+        self.threshold_tab = tk.Frame(self.notebook, bg=self.PANEL_BG)
+        advanced_tab = tk.Frame(self.notebook, bg=self.PANEL_BG)
+        self.crop_tab = tk.Frame(self.notebook, bg=self.PANEL_BG)
+        self.calibration_tab = tk.Frame(self.notebook, bg=self.PANEL_BG)
+        self.graph_tab = tk.Frame(self.notebook, bg="white")
+        self.settings_tab = tk.Frame(self.notebook, bg=self.PANEL_BG)
 
         self.notebook.add(basic_tab, text="Basic")
         self.notebook.add(self.threshold_tab, text="Threshold")
@@ -547,10 +718,9 @@ class JetAnalysisGUI:
 
         # ================= BASIC TAB =================
 
-        source_frame = tk.Frame(basic_tab)
-        source_frame.pack(pady=5)
+        source_frame = self.create_card(basic_tab, padx=6, pady=(8, 6))
 
-        self.video_source_label = tk.Label(source_frame, text="Video Source:")
+        self.video_source_label = ctk.CTkLabel(source_frame, text="Video Source:", text_color=self.TEXT_COLOR)
         self.video_source_label.grid(row=0, column=0, padx=5, pady=5, sticky="w")
 
         self.video_source_menu = ttk.Combobox(
@@ -558,18 +728,20 @@ class JetAnalysisGUI:
             textvariable=self.video_source_var,
             values=["Video File", "Live Camera"],
             state="readonly",
+            style="Modern.TCombobox",
         )
         self.video_source_menu.grid(row=0, column=1, padx=5, pady=5, sticky="w")
         self.video_source_menu.bind("<<ComboboxSelected>>", self.on_video_source_change)
 
         # Camera selection (only shown for live camera)
-        self.camera_label = tk.Label(source_frame, text="Camera:")
+        self.camera_label = ctk.CTkLabel(source_frame, text="Camera:", text_color=self.TEXT_COLOR)
         self.camera_combo = ttk.Combobox(
             source_frame,
             textvariable=self.camera_index_var,
             values=[],
             state="readonly",
-            width=20
+            width=20,
+            style="Modern.TCombobox",
         )
         self.camera_combo.bind("<<ComboboxSelected>>", self.on_camera_selected)
         # Initially hide camera controls
@@ -578,134 +750,134 @@ class JetAnalysisGUI:
         self.camera_label.grid_remove()
         self.camera_combo.grid_remove()
 
-        self.select_video_button = tk.Button(
-            basic_tab, text="Select Video", command=self.select_video)
+        self.select_video_button = self.create_button(
+            basic_tab, text="Select Video", command=self.select_video, tone="primary")
         self.select_video_button.pack(pady=5)
 
-        self.video_label = tk.Label(
-            basic_tab, text="No video selected", wraplength=250)
+        self.video_label = ctk.CTkLabel(
+            basic_tab, text="No video selected", wraplength=250, text_color=self.MUTED_TEXT_COLOR)
         self.video_label.pack()
 
-        self.labeled_header(basic_tab, "Saved Video Outputs")
-        self.supported_input_label = tk.Label(
-            basic_tab,
-            text="Input formats: mp4, avi, mov, mkv, wmv, m4v, mpg, mpeg",
-            fg="gray30",
-            justify="left",
-            wraplength=280
-        )
-        self.supported_input_label.pack(anchor="w", padx=8, pady=(0, 6))
-
-        analysis_output_frame = tk.LabelFrame(basic_tab, text="Analysis Output")
-        analysis_output_frame.pack(fill="x", padx=6, pady=(0, 6))
+        analysis_output_frame = self.create_section_card(basic_tab, "Analysis Output", padx=6, pady=(0, 4), compact=True)
         self.attach_tooltip(analysis_output_frame, "Analysis Output")
-        self.analysis_output_check = tk.Checkbutton(
+        self.analysis_output_check = ctk.CTkCheckBox(
             analysis_output_frame,
             text="Save analysis video",
             variable=self.save_analysis_output_var,
-            command=self.on_output_toggle_changed
+            command=self.on_output_toggle_changed,
+            text_color=self.TEXT_COLOR,
+            checkbox_width=16,
+            checkbox_height=16,
+            font=("Segoe UI", 11),
         )
-        self.analysis_output_check.pack(anchor="w", padx=8, pady=(4, 2))
-        tk.Label(analysis_output_frame, text="File name:").pack(anchor="w", padx=8)
-        self.output_name_entry = tk.Entry(analysis_output_frame)
+        self.analysis_output_check.pack(anchor="w", padx=10, pady=(2, 1))
+        ctk.CTkLabel(analysis_output_frame, text="File name:", text_color=self.TEXT_COLOR, font=("Segoe UI", 11)).pack(anchor="w", padx=10)
+        self.output_name_entry = self.create_entry(analysis_output_frame, compact=True)
         self.output_name_entry.insert(0, self.app_defaults.get("output_name", DEFAULTS["output_name"]))
-        self.output_name_entry.pack(fill="x", padx=8, pady=(0, 4))
+        self.output_name_entry.pack(fill="x", padx=10, pady=(0, 3))
         self.attach_tooltip(self.output_name_entry, "Output File Name")
-        analysis_format_row = tk.Frame(analysis_output_frame)
-        analysis_format_row.pack(fill="x", padx=8, pady=(0, 4))
-        tk.Label(analysis_format_row, text="Format:").pack(side="left")
+        analysis_format_row = ctk.CTkFrame(analysis_output_frame, fg_color="transparent")
+        analysis_format_row.pack(fill="x", padx=10, pady=(0, 3))
+        ctk.CTkLabel(analysis_format_row, text="Format:", text_color=self.TEXT_COLOR, font=("Segoe UI", 11)).pack(side="left")
         self.analysis_output_format_combo = ttk.Combobox(
             analysis_format_row,
             textvariable=self.analysis_output_format_var,
             values=list(OUTPUT_FORMATS.keys()),
             state="readonly",
-            width=12
+            width=11,
+            style="Modern.TCombobox",
         )
         self.analysis_output_format_combo.pack(side="left", padx=(6, 0))
         self.analysis_output_format_combo.bind("<<ComboboxSelected>>", lambda _e: self.on_output_format_changed("analysis"))
-        analysis_path_row = tk.Frame(analysis_output_frame)
-        analysis_path_row.pack(fill="x", padx=8, pady=(0, 6))
-        self.analysis_output_entry = tk.Entry(analysis_path_row, textvariable=self.analysis_output_path_var)
+        analysis_path_row = ctk.CTkFrame(analysis_output_frame, fg_color="transparent")
+        analysis_path_row.pack(fill="x", padx=10, pady=(0, 5))
+        self.analysis_output_entry = self.create_entry(analysis_path_row, textvariable=self.analysis_output_path_var, compact=True)
         self.analysis_output_entry.pack(side="left", fill="x", expand=True)
-        self.analysis_output_browse_button = tk.Button(
+        self.analysis_output_browse_button = self.create_button(
             analysis_path_row,
             text="Browse",
-            command=lambda: self.select_output_file("analysis")
+            command=lambda: self.select_output_file("analysis"),
+            compact=True,
         )
         self.analysis_output_browse_button.pack(side="left", padx=(6, 0))
 
-        threshold_output_frame = tk.LabelFrame(basic_tab, text="Threshold Output")
-        threshold_output_frame.pack(fill="x", padx=6, pady=(0, 6))
+        threshold_output_frame = self.create_section_card(basic_tab, "Threshold Output", padx=6, pady=(0, 4), compact=True)
         self.attach_tooltip(threshold_output_frame, "Threshold Output")
-        self.threshold_output_check = tk.Checkbutton(
+        self.threshold_output_check = ctk.CTkCheckBox(
             threshold_output_frame,
             text="Save threshold video",
             variable=self.save_threshold_output_var,
-            command=self.on_output_toggle_changed
+            command=self.on_output_toggle_changed,
+            text_color=self.TEXT_COLOR,
+            checkbox_width=16,
+            checkbox_height=16,
+            font=("Segoe UI", 11),
         )
-        self.threshold_output_check.pack(anchor="w", padx=8, pady=(4, 2))
-        tk.Label(threshold_output_frame, text="File name:").pack(anchor="w", padx=8)
-        self.threshold_output_name_entry = tk.Entry(
+        self.threshold_output_check.pack(anchor="w", padx=10, pady=(2, 1))
+        ctk.CTkLabel(threshold_output_frame, text="File name:", text_color=self.TEXT_COLOR, font=("Segoe UI", 11)).pack(anchor="w", padx=10)
+        self.threshold_output_name_entry = self.create_entry(
             threshold_output_frame,
-            textvariable=self.threshold_output_name_var
+            textvariable=self.threshold_output_name_var,
+            compact=True,
         )
-        self.threshold_output_name_entry.pack(fill="x", padx=8, pady=(0, 4))
-        threshold_format_row = tk.Frame(threshold_output_frame)
-        threshold_format_row.pack(fill="x", padx=8, pady=(0, 4))
-        tk.Label(threshold_format_row, text="Format:").pack(side="left")
+        self.threshold_output_name_entry.pack(fill="x", padx=10, pady=(0, 3))
+        threshold_format_row = ctk.CTkFrame(threshold_output_frame, fg_color="transparent")
+        threshold_format_row.pack(fill="x", padx=10, pady=(0, 3))
+        ctk.CTkLabel(threshold_format_row, text="Format:", text_color=self.TEXT_COLOR, font=("Segoe UI", 11)).pack(side="left")
         self.threshold_output_format_combo = ttk.Combobox(
             threshold_format_row,
             textvariable=self.threshold_output_format_var,
             values=list(OUTPUT_FORMATS.keys()),
             state="readonly",
-            width=12
+            width=11,
+            style="Modern.TCombobox",
         )
         self.threshold_output_format_combo.pack(side="left", padx=(6, 0))
         self.threshold_output_format_combo.bind("<<ComboboxSelected>>", lambda _e: self.on_output_format_changed("threshold"))
-        threshold_path_row = tk.Frame(threshold_output_frame)
-        threshold_path_row.pack(fill="x", padx=8, pady=(0, 6))
-        self.threshold_output_entry = tk.Entry(threshold_path_row, textvariable=self.threshold_output_path_var)
+        threshold_path_row = ctk.CTkFrame(threshold_output_frame, fg_color="transparent")
+        threshold_path_row.pack(fill="x", padx=10, pady=(0, 5))
+        self.threshold_output_entry = self.create_entry(threshold_path_row, textvariable=self.threshold_output_path_var, compact=True)
         self.threshold_output_entry.pack(side="left", fill="x", expand=True)
-        self.threshold_output_browse_button = tk.Button(
+        self.threshold_output_browse_button = self.create_button(
             threshold_path_row,
             text="Browse",
-            command=lambda: self.select_output_file("threshold")
+            command=lambda: self.select_output_file("threshold"),
+            compact=True,
         )
         self.threshold_output_browse_button.pack(side="left", padx=(6, 0))
 
 
 
         # Live video frame limit control (shown only for live camera mode)
-        self.live_limit_row = tk.Frame(basic_tab)
-        self.live_limit_header = tk.Label(self.live_limit_row, text="Frames to run:")
-        self.live_limit_entry = tk.Entry(self.live_limit_row, textvariable=self.live_frame_limit, width=10)
+        self.live_limit_row = ctk.CTkFrame(basic_tab, fg_color="transparent")
+        self.live_limit_header = ctk.CTkLabel(self.live_limit_row, text="Frames to run:", text_color=self.TEXT_COLOR)
+        self.live_limit_entry = self.create_entry(self.live_limit_row, textvariable=self.live_frame_limit, width=90)
         self.live_limit_header.pack(side="left")
         self.live_limit_entry.pack(side="left", padx=(6, 0))
         # Initially hidden - will be shown when Live Camera is selected
-        self.validation_label = tk.Label(
+        self.validation_label = ctk.CTkLabel(
             basic_tab,
             textvariable=self.validation_message,
-            fg="firebrick",
+            text_color=self.ERROR_TEXT,
             wraplength=260,
             justify="left"
         )
         self.validation_label.pack(pady=(6, 2), anchor="w")
 
-        tk.Button(basic_tab, text="Reset Basic Tab",
-              command=self.reset_basic_tab).pack(pady=5)
-        project_row = tk.Frame(basic_tab)
+        self.create_button(basic_tab, text="Reset Basic Tab", command=self.reset_basic_tab).pack(pady=5)
+        project_row = ctk.CTkFrame(basic_tab, fg_color="transparent")
         project_row.pack(pady=(2, 2))
-        tk.Button(
+        self.create_button(
             project_row,
             text="Save Project",
             command=self.save_project
         ).pack(side="left", padx=(0, 6))
-        tk.Button(
+        self.create_button(
             project_row,
             text="Load Project",
             command=self.load_project
         ).pack(side="left")
-        tk.Button(
+        self.create_button(
             basic_tab,
             text="Open Documentation Page",
             command=self.open_documentation_page
@@ -714,7 +886,7 @@ class JetAnalysisGUI:
         # ================= ADVANCED TAB =================
 
         self.labeled_header(advanced_tab, "Frame Range Selection", pady=(10, 5))
-        self.use_full_range_button = tk.Button(
+        self.use_full_range_button = self.create_button(
             advanced_tab,
             text="Use full video",
             command=self.use_full_video
@@ -725,23 +897,23 @@ class JetAnalysisGUI:
                                         command=self.on_range_change)
         self.range_slider.pack(pady=10)
 
-        self.range_label = tk.Label(advanced_tab, text="Start: 0   End: 0")
+        self.range_label = ctk.CTkLabel(advanced_tab, text="Start: 0   End: 0", text_color=self.TEXT_COLOR)
         self.range_label.pack()
-        range_entry_row = tk.Frame(advanced_tab)
+        range_entry_row = ctk.CTkFrame(advanced_tab, fg_color="transparent")
         range_entry_row.pack(pady=(4, 0))
-        tk.Label(range_entry_row, text="Start").grid(row=0, column=0, padx=(0, 4))
-        self.start_entry = tk.Entry(range_entry_row, width=8, textvariable=self.start_frame_text)
+        ctk.CTkLabel(range_entry_row, text="Start", text_color=self.TEXT_COLOR).grid(row=0, column=0, padx=(0, 4))
+        self.start_entry = self.create_entry(range_entry_row, width=72, textvariable=self.start_frame_text)
         self.start_entry.grid(row=0, column=1, padx=(0, 8))
-        tk.Label(range_entry_row, text="End").grid(row=0, column=2, padx=(0, 4))
-        self.end_entry = tk.Entry(range_entry_row, width=8, textvariable=self.end_frame_text)
+        ctk.CTkLabel(range_entry_row, text="End", text_color=self.TEXT_COLOR).grid(row=0, column=2, padx=(0, 4))
+        self.end_entry = self.create_entry(range_entry_row, width=72, textvariable=self.end_frame_text)
         self.end_entry.grid(row=0, column=3)
 
-        jump_row = tk.Frame(advanced_tab)
+        jump_row = ctk.CTkFrame(advanced_tab, fg_color="transparent")
         jump_row.pack(pady=(6, 0))
-        self.jump_start_button = tk.Button(
+        self.jump_start_button = self.create_button(
             jump_row, text="Jump to Start", command=self.jump_to_start_frame)
         self.jump_start_button.grid(row=0, column=0, padx=(0, 8))
-        self.jump_end_button = tk.Button(
+        self.jump_end_button = self.create_button(
             jump_row, text="Jump to End", command=self.jump_to_end_frame)
         self.jump_end_button.grid(row=0, column=1)
 
@@ -750,73 +922,87 @@ class JetAnalysisGUI:
         self.stdev_entry = self.labeled_entry(
             advanced_tab, "Standard Deviations", "stdevs")
 
-        tk.Button(advanced_tab,
-              text="Reset Advanced Tab",
-              command=self.reset_advanced_tab).pack(pady=10)
+        self.create_button(advanced_tab, text="Reset Advanced Tab", command=self.reset_advanced_tab).pack(pady=10)
 
         # ================= THRESHOLD TAB =================
 
         self.labeled_header(self.threshold_tab, "Preview Mode", pady=(10, 5))
-        tk.Radiobutton(self.threshold_tab, text="Analysis Preview",
-                       variable=self.preview_mode,
-                       value="analysis",
-                       command=self.on_preview_mode_changed).pack(anchor="w", padx=8)
+        ctk.CTkRadioButton(
+            self.threshold_tab,
+            text="Analysis Preview",
+            variable=self.preview_mode,
+            value="analysis",
+            command=self.on_preview_mode_changed,
+            text_color=self.TEXT_COLOR,
+        ).pack(anchor="w", padx=8)
 
-        tk.Radiobutton(self.threshold_tab, text="Threshold Preview",
-                       variable=self.preview_mode,
-                       value="threshold",
-                       command=self.on_preview_mode_changed).pack(anchor="w", padx=8)
+        ctk.CTkRadioButton(
+            self.threshold_tab,
+            text="Threshold Preview",
+            variable=self.preview_mode,
+            value="threshold",
+            command=self.on_preview_mode_changed,
+            text_color=self.TEXT_COLOR,
+        ).pack(anchor="w", padx=8)
 
         # Create dummy labels for backward compatibility (no longer displayed)
-        self.actual_threshold_label = tk.Label(self.threshold_tab, text="")
-        self.threshold_value_label = tk.Label(self.threshold_tab, text="")
+        self.actual_threshold_label = ctk.CTkLabel(self.threshold_tab, text="")
+        self.threshold_value_label = ctk.CTkLabel(self.threshold_tab, text="")
         self.threshold_scale = None
 
         self.labeled_header(self.threshold_tab, "Threshold Mode", pady=(15, 5))
         
-        self.use_multi_threshold_checkbox = tk.Checkbutton(
+        self.use_multi_threshold_checkbox = ctk.CTkCheckBox(
             self.threshold_tab,
             text="Use Multi-Threshold",
             variable=self.use_multi_threshold_var,
-            command=self.on_threshold_mode_toggle
+            command=self.on_threshold_mode_toggle,
+            text_color=self.TEXT_COLOR,
         )
         self.use_multi_threshold_checkbox.pack(anchor="w", padx=8)
 
-        num_thresholds_frame = tk.Frame(self.threshold_tab)
+        num_thresholds_frame = ctk.CTkFrame(self.threshold_tab, fg_color="transparent")
         num_thresholds_frame.pack(anchor="w", padx=8, pady=(10, 0))
-        tk.Label(num_thresholds_frame, text="Number of Thresholds:").pack(side="left")
+        ctk.CTkLabel(num_thresholds_frame, text="Number of Thresholds:", text_color=self.TEXT_COLOR).pack(side="left")
         self.num_thresholds_combo = ttk.Combobox(
             num_thresholds_frame,
             textvariable=self.num_thresholds_var,
             values=["1", "2", "3", "4", "5"],
             state="readonly",
-            width=5
+            width=5,
+            style="Modern.TCombobox",
         )
         self.num_thresholds_combo.pack(side="left", padx=(6, 0))
         self.num_thresholds_combo.bind("<<ComboboxSelected>>", self.on_num_thresholds_changed)
 
-        self.multi_threshold_frame = tk.Frame(self.threshold_tab)
+        self.multi_threshold_frame = ctk.CTkFrame(
+            self.threshold_tab,
+            fg_color=self.CARD_BG,
+            corner_radius=16,
+            border_width=1,
+            border_color=self.BORDER_COLOR,
+        )
         self.multi_threshold_frame.pack(fill="both", expand=True, padx=8, pady=(10, 0))
 
         self.multi_threshold_rows = []
         self.multi_threshold_value_labels = []
         self.multi_threshold_sliders = []
 
-        sliders_row = tk.Frame(self.multi_threshold_frame)
+        sliders_row = ctk.CTkFrame(self.multi_threshold_frame, fg_color="transparent")
         sliders_row.pack(fill="x", pady=(4, 0))
         for idx in range(5):
             sliders_row.columnconfigure(idx, weight=1)
 
         for idx in range(5):
-            col_frame = tk.Frame(sliders_row)
+            col_frame = ctk.CTkFrame(sliders_row, fg_color="transparent")
             col_frame.grid(row=0, column=idx, sticky="n", padx=4)
 
             label_color = self.multi_threshold_colors[idx + 1]
-            tk.Label(
+            ctk.CTkLabel(
                 col_frame,
                 text=f"T{idx + 1}",
-                fg=label_color,
-                font=("TkDefaultFont", 9, "bold")
+                text_color=label_color,
+                font=("Segoe UI Semibold", 12),
             ).grid(row=0, column=0)
 
             scale = tk.Scale(
@@ -833,20 +1019,18 @@ class JetAnalysisGUI:
             )
             scale.grid(row=1, column=0)
 
-            value_label = tk.Label(col_frame, text=str(self.multi_threshold_offsets[idx].get()), font=("TkDefaultFont", 9))
+            value_label = ctk.CTkLabel(col_frame, text=str(self.multi_threshold_offsets[idx].get()), font=("Segoe UI", 11), text_color=self.TEXT_COLOR)
             value_label.grid(row=2, column=0)
 
             # Arrow buttons row
-            arrow_row = tk.Frame(col_frame)
+            arrow_row = ctk.CTkFrame(col_frame, fg_color="transparent")
             arrow_row.grid(row=3, column=0)
-            tk.Button(
-                arrow_row, text="\u25B2", font=("TkDefaultFont", 7),
-                width=2, repeatdelay=300, repeatinterval=50,
+            self.create_button(
+                arrow_row, text="\u25B2", width=36,
                 command=lambda i=idx: self._nudge_threshold(i, 1)
             ).pack(side="left", padx=1)
-            tk.Button(
-                arrow_row, text="\u25BC", font=("TkDefaultFont", 7),
-                width=2, repeatdelay=300, repeatinterval=50,
+            self.create_button(
+                arrow_row, text="\u25BC", width=36,
                 command=lambda i=idx: self._nudge_threshold(i, -1)
             ).pack(side="left", padx=1)
 
@@ -854,10 +1038,10 @@ class JetAnalysisGUI:
             self.multi_threshold_value_labels.append(value_label)
             self.multi_threshold_sliders.append(scale)
         
-        weights_header = tk.Label(self.multi_threshold_frame, text="Region Weights (0-10)", font=("TkDefaultFont", 9, "bold"))
+        weights_header = ctk.CTkLabel(self.multi_threshold_frame, text="Region Weights (0-10)", font=("Segoe UI Semibold", 12), text_color=self.TEXT_COLOR)
         weights_header.pack(pady=(10, 6))
         
-        weights_row = tk.Frame(self.multi_threshold_frame)
+        weights_row = ctk.CTkFrame(self.multi_threshold_frame, fg_color="transparent")
         weights_row.pack(fill="x", pady=(0, 6))
         
         self.multi_region_rows = []
@@ -865,7 +1049,7 @@ class JetAnalysisGUI:
         self.multi_region_color_buttons = []
         
         for idx in range(6):
-            region_frame = tk.Frame(weights_row)
+            region_frame = ctk.CTkFrame(weights_row, fg_color="transparent")
             region_frame.pack(side="left", fill="both", expand=True, padx=(0, 6))
             self.multi_region_rows.append(region_frame)
             
@@ -886,13 +1070,7 @@ class JetAnalysisGUI:
             label.bind("<Button-1>", lambda _e, i=idx: self.pick_multi_threshold_color(i))
             
             # Weight entry
-            entry = tk.Entry(
-                region_frame,
-                textvariable=self.multi_threshold_weights[idx],
-                width=4,
-                justify="center",
-                font=("TkDefaultFont", 10, "bold")
-            )
+            entry = self.create_entry(region_frame, textvariable=self.multi_threshold_weights[idx], width=56)
             entry.pack()
             entry.bind("<Return>", lambda _e, i=idx: self.on_multi_threshold_weights_changed(i))
             entry.bind("<FocusOut>", lambda _e, i=idx: self.on_multi_threshold_weights_changed(i))
@@ -900,7 +1078,7 @@ class JetAnalysisGUI:
             self.multi_region_weight_entries.append(entry)
             self.multi_region_color_buttons.append(label)
 
-        tk.Button(
+        self.create_button(
             self.threshold_tab,
             text="Reset Threshold Tab",
             command=self.reset_threshold_tab
@@ -910,28 +1088,28 @@ class JetAnalysisGUI:
 
         self.labeled_header(self.crop_tab, "Crop Controls", pady=(10, 5))
 
-        self.save_crop_button = tk.Button(
+        self.save_crop_button = self.create_button(
             self.crop_tab,
             text="Save Crop",
             command=self.save_crop,
-            state="disabled"
         )
+        self.save_crop_button.configure(state="disabled")
         self.save_crop_button.pack(pady=5)
-        self.reset_crop_button = tk.Button(
+        self.reset_crop_button = self.create_button(
             self.crop_tab,
             text="Reset Crop Tab",
             command=self.reset_crop_tab
         )
         self.reset_crop_button.pack(pady=5)
 
-        self.crop_size_label = tk.Label(
-            self.crop_tab, textvariable=self.crop_size_text, fg="gray30")
+        self.crop_size_label = ctk.CTkLabel(
+            self.crop_tab, textvariable=self.crop_size_text, text_color=self.MUTED_TEXT_COLOR)
         self.crop_size_label.pack(pady=(2, 0))
 
         # ================= CALIBRATION TAB =================
         self.labeled_header(self.calibration_tab, "Calibration Distance", pady=(10, 5))
-        self.calibration_distance_entry = tk.Entry(
-            self.calibration_tab, textvariable=self.calibration_distance_var, width=12
+        self.calibration_distance_entry = self.create_entry(
+            self.calibration_tab, textvariable=self.calibration_distance_var, width=110
         )
         self.calibration_distance_entry.pack(anchor="w", padx=8)
         self.attach_tooltip(self.calibration_distance_entry, "Calibration Distance")
@@ -942,21 +1120,22 @@ class JetAnalysisGUI:
             textvariable=self.calibration_units_var,
             values=["mm", "cm", "in"],
             width=8,
-            state="readonly"
+            state="readonly",
+            style="Modern.TCombobox",
         )
         self.calibration_units_combo.pack(anchor="w", padx=8)
         self.attach_tooltip(self.calibration_units_combo, "Calibration Units")
 
         # Top row: Set Calibration Line and Set Nozzle Origin
-        top_button_row = tk.Frame(self.calibration_tab)
+        top_button_row = ctk.CTkFrame(self.calibration_tab, fg_color="transparent")
         top_button_row.pack(anchor="w", padx=8, pady=(10, 0))
-        self.calibration_set_line_button = tk.Button(
+        self.calibration_set_line_button = self.create_button(
             top_button_row,
             text="Set Calibration Line",
             command=self.start_calibration_line_mode
         )
         self.calibration_set_line_button.pack(side="left", padx=(0, 6))
-        self.calibration_set_nozzle_button = tk.Button(
+        self.calibration_set_nozzle_button = self.create_button(
             top_button_row,
             text="Set Nozzle Origin",
             command=self.start_nozzle_pick_mode
@@ -965,68 +1144,68 @@ class JetAnalysisGUI:
         self.attach_tooltip(self.calibration_set_nozzle_button, "Nozzle Origin")
         
         # Bottom row: Apply Calibration and Clear Calibration
-        bottom_button_row = tk.Frame(self.calibration_tab)
+        bottom_button_row = ctk.CTkFrame(self.calibration_tab, fg_color="transparent")
         bottom_button_row.pack(anchor="w", padx=8, pady=(6, 0))
-        self.calibration_apply_button = tk.Button(
+        self.calibration_apply_button = self.create_button(
             bottom_button_row,
             text="Apply Calibration",
             command=self.apply_calibration
         )
         self.calibration_apply_button.pack(side="left", padx=(0, 6))
-        self.calibration_clear_button = tk.Button(
+        self.calibration_clear_button = self.create_button(
             bottom_button_row,
             text="Clear Calibration",
             command=self.clear_calibration
         )
         self.calibration_clear_button.pack(side="left")
-        tk.Label(
+        ctk.CTkLabel(
             self.calibration_tab,
             text="Draw or drag the two endpoints on the preview.\nThen enter the real distance and units.",
-            fg="gray30",
+            text_color=self.MUTED_TEXT_COLOR,
             justify="left"
         ).pack(anchor="w", padx=8, pady=(10, 0))
-        self.calibration_status_label = tk.Label(
+        self.calibration_status_label = ctk.CTkLabel(
             self.calibration_tab,
             textvariable=self.calibration_status_var,
-            fg="gray20",
+            text_color=self.TEXT_COLOR,
             justify="left",
             wraplength=260
         )
         self.calibration_status_label.pack(anchor="w", padx=8, pady=(8, 0))
-        self.nozzle_status_label = tk.Label(
+        self.nozzle_status_label = ctk.CTkLabel(
             self.calibration_tab,
             textvariable=self.nozzle_status_var,
-            fg="gray20",
+            text_color=self.TEXT_COLOR,
             justify="left",
             wraplength=260
         )
         self.nozzle_status_label.pack(anchor="w", padx=8, pady=(4, 0))
 
         self.labeled_header(self.calibration_tab, "Calibration Zoom", pady=(10, 5))
-        zoom_row = tk.Frame(self.calibration_tab)
+        zoom_row = ctk.CTkFrame(self.calibration_tab, fg_color="transparent")
         zoom_row.pack(anchor="w", padx=8)
-        self.calibration_zoom_out_button = tk.Button(
+        self.calibration_zoom_out_button = self.create_button(
             zoom_row,
             text="-",
-            width=3,
+            width=36,
             command=lambda: self.set_calibration_zoom(self.calibration_zoom / 1.25)
         )
         self.calibration_zoom_out_button.pack(side="left")
-        self.calibration_zoom_in_button = tk.Button(
+        self.calibration_zoom_in_button = self.create_button(
             zoom_row,
             text="+",
-            width=3,
+            width=36,
             command=lambda: self.set_calibration_zoom(self.calibration_zoom * 1.25)
         )
         self.calibration_zoom_in_button.pack(side="left", padx=(6, 0))
-        self.calibration_zoom_reset_button = tk.Button(
+        self.calibration_zoom_reset_button = self.create_button(
             zoom_row,
             text="Reset",
             command=lambda: self.set_calibration_zoom(1.0)
         )
         self.calibration_zoom_reset_button.pack(side="left", padx=(8, 0))
 
-        tk.Button(
+        self.create_button(
             self.calibration_tab,
             text="Reset Calibration Tab",
             command=self.reset_calibration_tab
@@ -1053,16 +1232,16 @@ class JetAnalysisGUI:
         graph_controls_outer_right.grid(row=0, column=3, sticky="nw")
 
         self.labeled_header(graph_controls_left, "Graph Standard Deviations", pady=(0, 0))
-        self.graph_stdev_entry = tk.Entry(graph_controls_left, textvariable=self.graph_stdevs_var, width=8)
+        self.graph_stdev_entry = self.create_entry(graph_controls_left, textvariable=self.graph_stdevs_var, width=80)
         self.graph_stdev_entry.pack(anchor="w")
         self.attach_tooltip(self.graph_stdev_entry, "Graph Standard Deviations")
 
-        tk.Button(
+        self.create_button(
             graph_controls_left,
             text="Save Graph Image",
             command=self.save_graph_image
         ).pack(anchor="w", pady=(8, 0))
-        tk.Button(
+        self.create_button(
             graph_controls_left,
             text="Save Graph Data (CSV)",
             command=self.save_graph_data_csv
@@ -1076,7 +1255,7 @@ class JetAnalysisGUI:
         )
         self.graph_units_label.pack(anchor="w", pady=(6, 0))
 
-        tk.Button(
+        self.create_button(
             graph_controls_left,
             text="Reset Graph Tab",
             command=self.reset_graph_tab
@@ -1088,7 +1267,8 @@ class JetAnalysisGUI:
             textvariable=self.graph_view_mode_var,
             values=["Profile", "Histogram", "Q-Q Plot"],
             state="readonly",
-            width=18
+            width=18,
+            style="Modern.TCombobox",
         )
         self.graph_view_combo.pack(anchor="w")
         self.graph_view_combo.bind("<<ComboboxSelected>>", lambda _event: self.redraw_graph())
@@ -1100,7 +1280,8 @@ class JetAnalysisGUI:
             textvariable=self.graph_distribution_kind_var,
             values=["Residuals", "Positions", "Z-Scores"],
             state="readonly",
-            width=18
+            width=18,
+            style="Modern.TCombobox",
         )
         self.graph_distribution_kind_combo.pack(anchor="w")
         self.graph_distribution_kind_combo.bind("<<ComboboxSelected>>", lambda _event: self.redraw_graph())
@@ -1112,7 +1293,8 @@ class JetAnalysisGUI:
             textvariable=self.graph_histogram_scope_var,
             values=["All Columns", "All Columns (Combined)", "Selected Column"],
             state="readonly",
-            width=18
+            width=18,
+            style="Modern.TCombobox",
         )
         self.graph_histogram_scope_combo.pack(anchor="w")
         self.graph_histogram_scope_combo.bind("<<ComboboxSelected>>", lambda _event: self.redraw_graph())
@@ -1122,10 +1304,10 @@ class JetAnalysisGUI:
         distribution_column_row.pack(anchor="w", pady=(8, 0))
         self.graph_distribution_column_label = tk.Label(distribution_column_row, text="Selected Column (px)", bg="white")
         self.graph_distribution_column_label.pack(side="left")
-        self.graph_distribution_column_entry = tk.Entry(
+        self.graph_distribution_column_entry = self.create_entry(
             distribution_column_row,
             textvariable=self.graph_distribution_column_px_var,
-            width=8
+            width=80
         )
         self.graph_distribution_column_entry.pack(side="left", padx=(8, 0))
         self.attach_tooltip(self.graph_distribution_column_entry, "Distribution Column")
@@ -1143,10 +1325,10 @@ class JetAnalysisGUI:
         distribution_bins_row.pack(anchor="w", pady=(6, 0))
         self.graph_distribution_bins_label = tk.Label(distribution_bins_row, text="Histogram Bins", bg="white")
         self.graph_distribution_bins_label.pack(side="left")
-        self.graph_distribution_bins_entry = tk.Entry(
+        self.graph_distribution_bins_entry = self.create_entry(
             distribution_bins_row,
             textvariable=self.graph_distribution_bins_var,
-            width=8
+            width=80
         )
         self.graph_distribution_bins_entry.pack(side="left", padx=(8, 0))
         self.attach_tooltip(self.graph_distribution_bins_entry, "Distribution Bins")
@@ -1161,16 +1343,16 @@ class JetAnalysisGUI:
         ).pack(anchor="w", pady=(0, 6))
 
         self.labeled_header(graph_controls_right, "Graph Fit Degree", pady=(8, 0))
-        self.graph_fit_degree_entry = tk.Entry(graph_controls_right, textvariable=self.graph_fit_degree_var, width=8)
+        self.graph_fit_degree_entry = self.create_entry(graph_controls_right, textvariable=self.graph_fit_degree_var, width=80)
         self.graph_fit_degree_entry.pack(anchor="w")
         self.attach_tooltip(self.graph_fit_degree_entry, "Graph Fit Degree")
 
-        self.show_best_fit_checkbox = tk.Checkbutton(
+        self.show_best_fit_checkbox = ctk.CTkCheckBox(
             graph_controls_right,
             text="Show Best-Fit Line",
             variable=self.show_best_fit_var,
             command=self.redraw_graph,
-            bg="white"
+            text_color=self.TEXT_COLOR,
         )
         self.show_best_fit_checkbox.pack(anchor="w", pady=(6, 0))
 
@@ -1186,7 +1368,7 @@ class JetAnalysisGUI:
             borderwidth=0
         )
         self.graph_fit_equation_text.pack(anchor="w", pady=(6, 0))
-        self.graph_fit_equation_text.config(state="disabled")
+        self.graph_fit_equation_text.configure(state="disabled")
         self.set_graph_fit_equation_text(self.graph_fit_equation_var.get())
 
         self.graph_canvas = tk.Canvas(self.graph_tab, bg="white", highlightthickness=1, highlightbackground="#dddddd")
@@ -1195,7 +1377,7 @@ class JetAnalysisGUI:
 
         # ================= SETTINGS TAB =================
         self.labeled_header(self.settings_tab, "Startup Defaults", pady=(10, 5))
-        tk.Label(
+        ctk.CTkLabel(
             self.settings_tab,
             text=(
                 "Set up the app the way you want across all tabs, then save those values as startup defaults.\n"
@@ -1203,36 +1385,36 @@ class JetAnalysisGUI:
             ),
             justify="left",
             wraplength=290,
-            fg="gray25"
+            text_color=self.MUTED_TEXT_COLOR
         ).pack(anchor="w", padx=8)
-        tk.Label(
+        ctk.CTkLabel(
             self.settings_tab,
             textvariable=self.settings_status_var,
             justify="left",
             wraplength=290,
-            fg="gray20"
+            text_color=self.TEXT_COLOR
         ).pack(anchor="w", padx=8, pady=(8, 10))
-        tk.Button(
+        self.create_button(
             self.settings_tab,
             text="Save Current Values as Startup Defaults",
             command=self.save_current_as_startup_defaults
         ).pack(anchor="w", padx=8, pady=(0, 6))
-        tk.Button(
+        self.create_button(
             self.settings_tab,
             text="Apply Startup Defaults Now",
             command=self.apply_startup_defaults_now
         ).pack(anchor="w", padx=8, pady=(0, 6))
-        tk.Button(
+        self.create_button(
             self.settings_tab,
             text="Reset Factory Defaults",
             command=self.reset_saved_startup_defaults
         ).pack(anchor="w", padx=8, pady=(0, 6))
-        tk.Label(
+        ctk.CTkLabel(
             self.settings_tab,
             text=f"Settings file: {APP_SETTINGS_FILENAME}",
             justify="left",
             wraplength=290,
-            fg="gray35"
+            text_color=self.MUTED_TEXT_COLOR
         ).pack(anchor="w", padx=8, pady=(10, 0))
 
     # ======================================================
@@ -1246,7 +1428,7 @@ class JetAnalysisGUI:
         source = self.video_source_var.get()
         if source == "Live Camera":
             self.select_video_button.pack_forget()
-            self.video_label.config(text="Live from webcam (press Run to start analysis)")
+            self.video_label.configure(text="Live from webcam (press Run to start analysis)")
             self.video_path.set("")  # Clear video path
             self.total_frames = 0
             self.reset_runtime_state()
@@ -1269,7 +1451,7 @@ class JetAnalysisGUI:
             self.refresh_run_state()
         else:  # Video File
             self.select_video_button.pack(pady=5)
-            self.video_label.config(text="No video selected")
+            self.video_label.configure(text="No video selected")
             self.set_range_controls_enabled(False)  # Will be enabled on video load
             # Hide camera selection controls
             self.camera_label.grid_remove()
@@ -1451,17 +1633,17 @@ class JetAnalysisGUI:
                 if has_video_file and not self.crop_mode:
                     self.enable_crop_mode()
                 elif has_video_file and self.crop_mode:
-                    self.save_crop_button.config(state="normal")
+                    self.save_crop_button.configure(state="normal")
                 elif source == "Live Camera" and self.live_preview_active and not self.crop_mode:
                     # For live camera with preview active, enable crop mode with current frame
                     self.enable_live_crop_mode()
                 elif source == "Live Camera" and self.crop_mode:
-                    self.save_crop_button.config(state="normal")
+                    self.save_crop_button.configure(state="normal")
         else:
             self.drag_start = None
             self.resize_corner = None
             self.canvas.delete("crop_box")
-            self.save_crop_button.config(state="disabled")
+            self.save_crop_button.configure(state="disabled")
 
         if not calibration_tab_selected:
             self.calibration_mode = False
@@ -1594,7 +1776,7 @@ class JetAnalysisGUI:
 
     def load_video(self, file):
         self.video_path.set(file)
-        self.video_label.config(text=os.path.basename(file))
+        self.video_label.configure(text=os.path.basename(file))
         self.output_dir.set(os.path.dirname(file))
         self.update_output_path_defaults(force=False)
         self.reset_runtime_state()
@@ -1736,14 +1918,14 @@ class JetAnalysisGUI:
     def refresh_output_controls_state(self):
         analysis_enabled = self.save_analysis_output_var.get() and not self.is_running
         threshold_enabled = self.save_threshold_output_var.get() and not self.is_running
-        self.output_name_entry.config(state="normal" if analysis_enabled else "disabled")
-        self.analysis_output_entry.config(state="normal" if analysis_enabled else "disabled")
-        self.analysis_output_browse_button.config(state="normal" if analysis_enabled else "disabled")
-        self.analysis_output_format_combo.config(state="readonly" if analysis_enabled else "disabled")
-        self.threshold_output_name_entry.config(state="normal" if threshold_enabled else "disabled")
-        self.threshold_output_entry.config(state="normal" if threshold_enabled else "disabled")
-        self.threshold_output_browse_button.config(state="normal" if threshold_enabled else "disabled")
-        self.threshold_output_format_combo.config(state="readonly" if threshold_enabled else "disabled")
+        self.output_name_entry.configure(state="normal" if analysis_enabled else "disabled")
+        self.analysis_output_entry.configure(state="normal" if analysis_enabled else "disabled")
+        self.analysis_output_browse_button.configure(state="normal" if analysis_enabled else "disabled")
+        self.analysis_output_format_combo.configure(state="readonly" if analysis_enabled else "disabled")
+        self.threshold_output_name_entry.configure(state="normal" if threshold_enabled else "disabled")
+        self.threshold_output_entry.configure(state="normal" if threshold_enabled else "disabled")
+        self.threshold_output_browse_button.configure(state="normal" if threshold_enabled else "disabled")
+        self.threshold_output_format_combo.configure(state="readonly" if threshold_enabled else "disabled")
 
     def preview_frame_at(self, frame_index):
         self.display_controller.preview_frame_at(frame_index)
@@ -1834,7 +2016,7 @@ class JetAnalysisGUI:
         self.nozzle_pick_mode = False
         self.crop_mode = False
         self.canvas.delete("crop_box")
-        self.save_crop_button.config(state="disabled")
+        self.save_crop_button.configure(state="disabled")
         self.calibration_mode = True
         if self.calibration_line_img is None:
             scale = self.current_scale if self.current_scale > 0 else 1.0
@@ -1855,7 +2037,7 @@ class JetAnalysisGUI:
             return
         self.crop_mode = False
         self.canvas.delete("crop_box")
-        self.save_crop_button.config(state="disabled")
+        self.save_crop_button.configure(state="disabled")
         self.calibration_mode = False
         self.calibration_drag_point = None
         self.nozzle_pick_mode = True
@@ -1893,7 +2075,7 @@ class JetAnalysisGUI:
             self.graph_x_axis_label.set(f"Horizontal Position ({units})")
         if self.graph_y_axis_label.get().strip() == old_default_y:
             self.graph_y_axis_label.set(f"Vertical Position ({units})")
-        self.graph_units_label.config(
+        self.graph_units_label.configure(
             text=f"Units: {units} | Scale: {self.graph_unit_scale:.6g} {units}/px"
         )
         self.calibration_status_var.set(
@@ -1913,7 +2095,7 @@ class JetAnalysisGUI:
             self.graph_x_axis_label.set("Horizontal Position (px)")
         if self.graph_y_axis_label.get().strip() == old_default_y:
             self.graph_y_axis_label.set("Vertical Position (px)")
-        self.graph_units_label.config(text="Units: px (uncalibrated)")
+        self.graph_units_label.configure(text="Units: px (uncalibrated)")
         self.calibration_status_var.set("Calibration: not set")
         self.calibration_mode = False
         self.calibration_drag_point = None
@@ -1997,7 +2179,7 @@ class JetAnalysisGUI:
         self.calibration_mode = False
         self.calibration_drag_point = None
         self.crop_mode = True
-        self.save_crop_button.config(state="normal")
+        self.save_crop_button.configure(state="normal")
         self.display_frame(frame)
 
         h, w = frame.shape[:2]
@@ -2254,7 +2436,7 @@ class JetAnalysisGUI:
         self.crop_bottom = bottom
 
         self.crop_mode = False
-        self.save_crop_button.config(state="disabled")
+        self.save_crop_button.configure(state="disabled")
         self.canvas.delete("crop_box")
         self.update_crop_size_label()
         self.refresh_run_state()
@@ -2605,7 +2787,7 @@ class JetAnalysisGUI:
         threshold_val = int(value)
         
         # Update the displayed value first
-        self.threshold_value_label.config(text=value)
+        self.threshold_value_label.configure(text=value)
         
         # Check if this would cause clamping and prevent it (only if we have a frame)
         min_allowed = self.get_minimum_threshold_offset()
@@ -2729,7 +2911,7 @@ class JetAnalysisGUI:
                     frame = None
             
             if frame is None:
-                self.actual_threshold_label.config(text="Actual Threshold: N/A (no frame)")
+                self.actual_threshold_label.configure(text="Actual Threshold: N/A (no frame)")
                 return
             
             # Calculate Otsu threshold
@@ -2742,11 +2924,11 @@ class JetAnalysisGUI:
             final_thresh = max(1, adjusted_thresh)
             
             # Update label
-            self.actual_threshold_label.config(
+            self.actual_threshold_label.configure(
                 text=f"Actual Threshold: {int(final_thresh)} (Otsu: {int(otsu_thresh)} + Offset: {int(offset)})"
             )
         except Exception as e:
-            self.actual_threshold_label.config(text=f"Actual Threshold: Error ({str(e)[:20]})")
+            self.actual_threshold_label.configure(text=f"Actual Threshold: Error ({str(e)[:20]})")
 
     def on_num_thresholds_changed(self, event=None):
         """Handle change in number of thresholds."""
@@ -2766,7 +2948,7 @@ class JetAnalysisGUI:
         
         # Update value label
         if 0 <= index < len(self.multi_threshold_value_labels):
-            self.multi_threshold_value_labels[index].config(text=str(threshold_val))
+            self.multi_threshold_value_labels[index].configure(text=str(threshold_val))
         
         # Apply settings
         self.apply_threshold_settings_to_configs()
@@ -2784,7 +2966,7 @@ class JetAnalysisGUI:
             self.multi_threshold_colors[index] = hex_color
             # Update the label color
             if index < len(self.multi_region_color_buttons):
-                self.multi_region_color_buttons[index].config(bg=hex_color)
+                self.multi_region_color_buttons[index].configure(bg=hex_color)
             self.apply_threshold_settings_to_configs()
 
     def get_multi_threshold_offsets(self):
@@ -2873,23 +3055,18 @@ class JetAnalysisGUI:
     # ======================================================
 
     def labeled_header(self, parent, label, pady=(10, 0)):
-        bg_color = parent.cget("bg")
-        row = tk.Frame(parent, bg=bg_color)
+        row = ctk.CTkFrame(parent, fg_color="transparent")
         row.pack(anchor="w", fill="x", pady=pady)
-        header_label = tk.Label(row, text=label, cursor="question_arrow", bg=bg_color)
+        header_label = ctk.CTkLabel(
+            row,
+            text=label,
+            text_color=self.TEXT_COLOR,
+            font=("Segoe UI Semibold", 13),
+        )
         header_label.pack(side="left")
         help_text = self.FIELD_HELP.get(label)
         if help_text:
             self.attach_tooltip(header_label, label)
-            hint_label = tk.Label(
-                row,
-                text=" ?",
-                fg="gray45",
-                cursor="question_arrow",
-                bg=bg_color
-            )
-            hint_label.pack(side="left")
-            self.attach_tooltip(hint_label, label)
         return row
 
     def set_graph_fit_equation_text(self, text):
@@ -2897,14 +3074,14 @@ class JetAnalysisGUI:
         self.graph_fit_equation_var.set(value)
         if not hasattr(self, "graph_fit_equation_text"):
             return
-        self.graph_fit_equation_text.config(state="normal")
+        self.graph_fit_equation_text.configure(state="normal")
         self.graph_fit_equation_text.delete("1.0", "end")
         self.graph_fit_equation_text.insert("1.0", value)
-        self.graph_fit_equation_text.config(state="disabled")
+        self.graph_fit_equation_text.configure(state="disabled")
 
     def labeled_entry(self, parent, label, key):
         self.labeled_header(parent, label, pady=(10, 0))
-        entry = tk.Entry(parent)
+        entry = self.create_entry(parent)
         entry.insert(0, self.app_defaults.get(key, DEFAULTS.get(key, "")))
         entry.pack()
         self.attach_tooltip(entry, label)
@@ -3000,19 +3177,19 @@ class JetAnalysisGUI:
 
         self.preview_mode.set(self.app_defaults["preview_mode"])
         self.threshold_offset_var.set(self.app_defaults["threshold_offset"])
-        self.threshold_value_label.config(text=str(self.app_defaults["threshold_offset"]))
+        self.threshold_value_label.configure(text=str(self.app_defaults["threshold_offset"]))
         self.use_multi_threshold_var.set(self.app_defaults["use_multi_threshold"])
         self.num_thresholds_var.set(self.app_defaults["num_thresholds"])
         for idx, offset_val in enumerate(self.app_defaults["multi_threshold_offsets"]):
             self.multi_threshold_offsets[idx].set(offset_val)
             if 0 <= idx < len(self.multi_threshold_value_labels):
-                self.multi_threshold_value_labels[idx].config(text=str(offset_val))
+                self.multi_threshold_value_labels[idx].configure(text=str(offset_val))
         for idx, weight_val in enumerate(self.app_defaults["multi_threshold_weights"]):
             self.multi_threshold_weights[idx].set(weight_val)
         self.multi_threshold_colors = list(self.app_defaults["multi_threshold_colors"])
         for idx, color in enumerate(self.multi_threshold_colors):
             if idx < len(self.multi_region_color_buttons):
-                self.multi_region_color_buttons[idx].config(bg=color)
+                self.multi_region_color_buttons[idx].configure(bg=color)
         self.update_multi_threshold_visibility()
         self.update_actual_threshold_display()
         self.apply_threshold_settings_to_configs()
@@ -3062,20 +3239,20 @@ class JetAnalysisGUI:
     def reset_threshold_tab(self):
         self.preview_mode.set(self.app_defaults["preview_mode"])
         self.threshold_offset_var.set(self.app_defaults["threshold_offset"])
-        self.threshold_value_label.config(text=str(self.app_defaults["threshold_offset"]))
+        self.threshold_value_label.configure(text=str(self.app_defaults["threshold_offset"]))
         self.use_multi_threshold_var.set(self.app_defaults["use_multi_threshold"])
         self.num_thresholds_var.set(self.app_defaults["num_thresholds"])
         for idx, offset_val in enumerate(self.app_defaults["multi_threshold_offsets"]):
             self.multi_threshold_offsets[idx].set(offset_val)
             # Manually update value labels since .set() doesn't trigger Scale command callback
             if 0 <= idx < len(self.multi_threshold_value_labels):
-                self.multi_threshold_value_labels[idx].config(text=str(offset_val))
+                self.multi_threshold_value_labels[idx].configure(text=str(offset_val))
         for idx, weight_val in enumerate(self.app_defaults["multi_threshold_weights"]):
             self.multi_threshold_weights[idx].set(weight_val)
         self.multi_threshold_colors = list(self.app_defaults["multi_threshold_colors"])
         for idx, color in enumerate(self.multi_threshold_colors):
             if idx < len(self.multi_region_color_buttons):
-                self.multi_region_color_buttons[idx].config(bg=color)
+                self.multi_region_color_buttons[idx].configure(bg=color)
         self.update_multi_threshold_visibility()
         self.update_actual_threshold_display()
         self.apply_threshold_settings_to_configs()
@@ -3182,7 +3359,7 @@ class JetAnalysisGUI:
             self.end_entry,
         ]
         for entry in entries:
-            entry.config(bg="white")
+            self.set_entry_validation_state(entry, False)
 
         # Video validation depends on source
         if source == "Video File" and not self.video_path.get():
@@ -3191,12 +3368,12 @@ class JetAnalysisGUI:
         pixels_per_col = self.safe_int(self.pixel_entry.get())
         if pixels_per_col is None or pixels_per_col <= 0:
             errors.append("Pixels per Column must be an integer greater than 0.")
-            self.pixel_entry.config(bg="misty rose")
+            self.set_entry_validation_state(self.pixel_entry, True)
 
         stdevs = self.safe_int(self.stdev_entry.get())
         if stdevs is None or stdevs < 0:
             errors.append("Standard Deviations must be an integer >= 0.")
-            self.stdev_entry.config(bg="misty rose")
+            self.set_entry_validation_state(self.stdev_entry, True)
 
         output_targets = []
         if self.save_analysis_output_var.get():
@@ -3206,15 +3383,15 @@ class JetAnalysisGUI:
 
         if self.save_analysis_output_var.get() and not self.output_name_entry.get().strip():
             errors.append("Analysis file name is required when saving analysis output.")
-            self.output_name_entry.config(bg="misty rose")
+            self.set_entry_validation_state(self.output_name_entry, True)
         if self.save_threshold_output_var.get() and not self.threshold_output_name_var.get().strip():
             errors.append("Threshold file name is required when saving threshold output.")
-            self.threshold_output_name_entry.config(bg="misty rose")
+            self.set_entry_validation_state(self.threshold_output_name_entry, True)
 
         for label, path, entry, format_label in output_targets:
             if not path:
                 errors.append(f"{label} output path is required when saving is enabled.")
-                entry.config(bg="misty rose")
+                self.set_entry_validation_state(entry, True)
                 continue
             normalized_path = self.ensure_output_path_extension(path, format_label)
             if normalized_path != path:
@@ -3225,15 +3402,15 @@ class JetAnalysisGUI:
             ext = os.path.splitext(normalized_path)[1].lower()
             if ext not in OUTPUT_FORMATS.values():
                 errors.append(f"{label} output format is not supported: {ext or '(no extension)'}.")
-                entry.config(bg="misty rose")
+                self.set_entry_validation_state(entry, True)
 
         if len(output_targets) == 2:
             analysis_path = self.analysis_output_path_var.get().strip()
             threshold_path = self.threshold_output_path_var.get().strip()
             if analysis_path and threshold_path and os.path.normcase(os.path.abspath(analysis_path)) == os.path.normcase(os.path.abspath(threshold_path)):
                 errors.append("Analysis and threshold outputs must use different file paths.")
-                self.analysis_output_entry.config(bg="misty rose")
-                self.threshold_output_entry.config(bg="misty rose")
+                self.set_entry_validation_state(self.analysis_output_entry, True)
+                self.set_entry_validation_state(self.threshold_output_entry, True)
 
         # Frame range validation only for video files
         if source == "Video File" and self.total_frames > 0:
@@ -3241,19 +3418,19 @@ class JetAnalysisGUI:
             end = self.safe_int(self.end_frame_text.get())
             if start is None:
                 errors.append("Start frame must be an integer.")
-                self.start_entry.config(bg="misty rose")
+                self.set_entry_validation_state(self.start_entry, True)
             if end is None:
                 errors.append("End frame must be an integer.")
-                self.end_entry.config(bg="misty rose")
+                self.set_entry_validation_state(self.end_entry, True)
             if start is not None and end is not None:
                 if start < 0 or end < 0 or start >= self.total_frames or end >= self.total_frames:
                     errors.append(f"Frame range must be between 0 and {self.total_frames - 1}.")
-                    self.start_entry.config(bg="misty rose")
-                    self.end_entry.config(bg="misty rose")
+                    self.set_entry_validation_state(self.start_entry, True)
+                    self.set_entry_validation_state(self.end_entry, True)
                 elif start > end:
                     errors.append("Start frame cannot be greater than end frame.")
-                    self.start_entry.config(bg="misty rose")
-                    self.end_entry.config(bg="misty rose")
+                    self.set_entry_validation_state(self.start_entry, True)
+                    self.set_entry_validation_state(self.end_entry, True)
 
         # Crop validation only for video files
         if source == "Video File" and (self.crop_right <= self.crop_left or self.crop_bottom <= self.crop_top):
@@ -3272,30 +3449,30 @@ class JetAnalysisGUI:
                     os.remove(write_probe)
                 except Exception as exc:
                     errors.append(f"Cannot write {label.lower()} output to {output_dir}: {exc}")
-                    entry.config(bg="misty rose")
+                    self.set_entry_validation_state(entry, True)
 
         self.validation_message.set("\n".join(errors))
         return len(errors) == 0, errors
 
     def refresh_run_state(self):
         if self.is_running:
-            self.run_button.config(state="disabled")
-            self.stop_button.config(state="normal")
+            self.run_button.configure(state="disabled")
+            self.stop_button.configure(state="normal")
             self.set_status("Running", "running")
             return
         
         # Live preview active but not analyzing - Run button should be enabled
         if self.live_preview_active:
-            self.run_button.config(state="normal")
-            self.stop_button.config(state="disabled")
+            self.run_button.configure(state="normal")
+            self.stop_button.configure(state="disabled")
             self.set_status("Preview ready", "ready")
             return
         
         is_valid, _ = self.validate_inputs(for_run=False)
-        self.run_button.config(state="normal" if is_valid else "disabled")
+        self.run_button.configure(state="normal" if is_valid else "disabled")
         # Enable stop button if there are validation errors to allow clearing them
         has_validation_errors = len(self.validation_message.get()) > 0
-        self.stop_button.config(state="normal" if has_validation_errors else "disabled")
+        self.stop_button.configure(state="normal" if has_validation_errors else "disabled")
         if self.analysis_error is not None:
             self.set_status("Error", "error")
         elif self.analysis_was_stopped:
@@ -3318,7 +3495,7 @@ class JetAnalysisGUI:
         self.progress["value"] = 0
         self.frame_counter = 0
         self.validation_message.set("")
-        self.time_label.config(text="0.00s | 0/0")
+        self.time_label.configure(text="0.00s | 0/0")
         self.redraw_graph()
 
     def update_crop_size_label(self, preview_rect=None):
@@ -3430,7 +3607,7 @@ class JetAnalysisGUI:
         self.resize_corner = None
         self.crop_rect = None
         self.canvas.delete("crop_box")
-        self.save_crop_button.config(state="disabled")
+        self.save_crop_button.configure(state="disabled")
 
         if self.total_frames > 0:
             self.apply_range(0, self.total_frames - 1)
@@ -3457,9 +3634,10 @@ class JetAnalysisGUI:
         self.reset_advanced_tab()
 
 if __name__ == "__main__":
-    root = tk.Tk()
+    root = ctk.CTk()
     app = JetAnalysisGUI(root)
     root.mainloop()
+
 
 
 

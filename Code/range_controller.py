@@ -14,7 +14,7 @@ class RangeController:
         app.start_frame_text.set(str(start))
         app.end_frame_text.set(str(end))
         app._range_sync_lock = False
-        app.range_label.config(text=f"Start: {start}   End: {end}")
+        app.range_label.configure(text=f"Start: {start}   End: {end}")
 
         if active_handle == "start":
             app.preview_frame_at(start)
@@ -50,7 +50,7 @@ class RangeController:
         app._range_sync_lock = False
 
         app.range_slider.set_values(start, end)
-        app.range_label.config(text=f"Start: {start}   End: {end}")
+        app.range_label.configure(text=f"Start: {start}   End: {end}")
         if preview_handle == "start":
             app.preview_frame_at(start)
         elif preview_handle == "end":
@@ -69,7 +69,7 @@ class RangeController:
         app.range_slider.set_enabled(enabled)
         state = "normal" if enabled else "disabled"
         for widget in (app.start_entry, app.end_entry, app.jump_start_button, app.jump_end_button):
-            widget.config(state=state)
+            widget.configure(state=state)
 
     def jump_to_start_frame(self):
         app = self.app

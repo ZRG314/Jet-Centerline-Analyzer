@@ -1,6 +1,7 @@
 """Controller for preview rendering, frame display transforms, and live preview updates."""
 
 import time
+import tkinter as tk
 
 import cv2
 from PIL import Image, ImageTk
@@ -12,18 +13,53 @@ class DisplayController:
 
     def on_resize(self, event):
         app = self.app
-        app.preview_width = event.width
-        app.preview_height = event.height
-        if app.last_display_frame is not None:
-            app.display_frame(app.last_display_frame)
+        new_size = (max(1, int(event.width)), max(1, int(event.height)))
+        if app._pending_preview_size == new_size:
+            return
+        app._pending_preview_size = new_size
+        app._resize_render_hold_until = time.time() + 0.45
+        app._resize_freeze_active = True
+        if app._resize_after_id is not None:
+            app.root.after_cancel(app._resize_after_id)
+        app._resize_after_id = app.root.after(260, self._flush_resize)
+
+    def _flush_resize(self):
+        app = self.app
+        app._resize_after_id = None
+        if not app._pending_preview_size:
+            return
+        app.preview_width, app.preview_height = app._pending_preview_size
+        app._pending_preview_size = None
+        app._resize_freeze_active = False
+        frame_to_render = app._deferred_display_frame if app._deferred_display_frame is not None else app.last_display_frame
+        app._deferred_display_frame = None
+        if frame_to_render is not None:
+            self._render_frame(frame_to_render, remember_frame=False, update_threshold=False)
         else:
             app.update_post_analysis_preview()
 
     def display_frame(self, frame):
         app = self.app
-        app.last_display_frame = frame.copy()
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        img = Image.fromarray(rgb)
+        if app._resize_freeze_active or time.time() < app._resize_render_hold_until:
+            app._deferred_display_frame = frame.copy()
+            app.last_display_frame = app._deferred_display_frame
+            return
+        self._render_frame(frame, remember_frame=True, update_threshold=True)
+
+    def _render_frame(self, frame, remember_frame, update_threshold):
+        app = self.app
+        frame_id = id(frame)
+        if app._cached_display_frame_id == frame_id and app._cached_display_pil is not None:
+            img = app._cached_display_pil
+        else:
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            img = Image.fromarray(rgb)
+            app._cached_display_frame_id = frame_id
+            app._cached_display_pil = img
+        if remember_frame:
+            app.last_display_frame = frame.copy()
+            app._cached_display_frame_id = id(app.last_display_frame)
+            app._cached_display_pil = img
 
         orig_w, orig_h = img.size
         scale = min(app.preview_width / orig_w, app.preview_height / orig_h)
@@ -57,8 +93,13 @@ class DisplayController:
         canvas_img.paste(resized, (app.x_offset, app.y_offset))
 
         photo = ImageTk.PhotoImage(canvas_img)
-        app.canvas.delete("all")
-        app.canvas.create_image(0, 0, anchor="nw", image=photo)
+        if app.canvas_image_item is None:
+            app.canvas_image_item = app.canvas.create_image(0, 0, anchor="nw", image=photo)
+        else:
+            try:
+                app.canvas.itemconfigure(app.canvas_image_item, image=photo)
+            except tk.TclError:
+                app.canvas_image_item = app.canvas.create_image(0, 0, anchor="nw", image=photo)
         app.canvas.image = photo
 
         if app.crop_mode and app.crop_rect and app.notebook.select() == str(app.crop_tab):
@@ -75,8 +116,8 @@ class DisplayController:
             app.canvas.delete("cal_line")
             app.canvas.delete("nozzle_origin")
         
-        # Update actual threshold display when frame changes
-        app.update_actual_threshold_display()
+        if update_threshold:
+            app.update_actual_threshold_display()
 
     def preview_frame_at(self, frame_index):
         app = self.app
@@ -132,7 +173,7 @@ class DisplayController:
 
         app.root.after(
             0,
-            lambda: app.time_label.config(
+            lambda: app.time_label.configure(
                 text=f"{elapsed:.2f}s | {app.frame_counter}/{app.total_frames_to_process}"
             ),
         )

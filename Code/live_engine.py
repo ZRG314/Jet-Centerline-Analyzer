@@ -250,7 +250,7 @@ class LiveEngine:
                             max_frames = self.analysis_config.get('max_frames', None)
                             frames_display = f"{self.frame_count}/{max_frames}" if max_frames else f"{self.frame_count}"
                             time_label_text = f"{elapsed:.2f}s | {frames_display}"
-                            self.gui.root.after(0, lambda text=time_label_text: self.gui.time_label.config(text=text))
+                            self.gui.root.after(0, lambda text=time_label_text: self.gui.time_label.configure(text=text))
                     else:
                         # Preview mode - update every 30 frames
                         if frame_count % 30 == 0 and current_time > last_update_time:

@@ -1,28 +1,28 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller spec for Jet Analyzer Program.
 Build with:  pyinstaller JetAnalyzer.spec
-Output:      dist\JetAnalyzer\JetAnalyzer.exe
+Output:      JetAnalyzer.exe and _internal\ in the app folder
 """
 
 import os
+from PyInstaller.utils.hooks import collect_data_files
 
 ROOT = os.path.dirname(os.path.abspath(SPEC))
 CODE_DIR = os.path.join(ROOT, "Code")
-PROJECTS_DIR = os.path.join(ROOT, "projects")
 ICON_PATH = os.path.join(ROOT, "icon.ico")
+CTK_DATAS = collect_data_files("customtkinter")
 
 a = Analysis(
     [os.path.join(CODE_DIR, "gui.py")],
     pathex=[CODE_DIR],
     binaries=[],
     datas=[
-        # Bundle the documentation file as a read-only resource inside _internal/
         (os.path.join(CODE_DIR, "app_documentation.md"), "."),
-        # Bundle the icon so the app window can reference it at runtime
         (ICON_PATH, "."),
-    ],
+    ] + CTK_DATAS,
     icon=ICON_PATH,
     hiddenimports=[
+        "customtkinter",
         "cv2",
         "numpy",
         "PIL",
@@ -61,9 +61,9 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     icon=ICON_PATH,
-    console=False,           # No console window — GUI-only app
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
@@ -76,7 +76,7 @@ coll = COLLECT(
     a.binaries,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     name="JetAnalyzer",
 )
