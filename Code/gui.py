@@ -8,6 +8,7 @@ import sys
 import json
 import time
 import copy
+import shutil
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk, colorchooser
 import threading
@@ -26,6 +27,7 @@ except ModuleNotFoundError as exc:
 ctk.deactivate_automatic_dpi_awareness()
 
 from analysis_engine import JetAnalysisConfig, process_video
+from camera_capture import create_camera_capture, list_available_cameras
 from display_controller import DisplayController
 from documentation_controller import DocumentationController
 from graph_controller import GraphController
@@ -41,6 +43,7 @@ DEFAULTS = {
     "multi_threshold_offsets": [7, 20, 30, 40, 50],
     "multi_threshold_weights": [1, 1, 1, 1, 1, 1],
     "multi_threshold_colors": ["#000000", "#2ca02c", "#ff7f0e", "#d62728", "#9467bd", "#1f77b4"],
+    "frame_stride": 1,
     "pixels_per_col": 3,
     "stdevs": 2,
     "output_name": "analysis_output",
@@ -53,6 +56,7 @@ DEFAULTS = {
     "analysis_output_path": "",
     "threshold_output_path": "",
     "preview_mode": "analysis",
+    "show_analysis_overlay": True,
     "use_multi_threshold": False,
     "live_frame_limit": "",
     "num_thresholds": 1,
@@ -182,6 +186,13 @@ def normalize_app_defaults(saved_defaults):
         merged["threshold_offset"] = DEFAULTS["threshold_offset"]
 
     try:
+        merged["frame_stride"] = int(merged["frame_stride"])
+    except (TypeError, ValueError):
+        merged["frame_stride"] = DEFAULTS["frame_stride"]
+    if merged["frame_stride"] < 1:
+        merged["frame_stride"] = DEFAULTS["frame_stride"]
+
+    try:
         merged["pixels_per_col"] = int(merged["pixels_per_col"])
     except (TypeError, ValueError):
         merged["pixels_per_col"] = DEFAULTS["pixels_per_col"]
@@ -199,6 +210,7 @@ def normalize_app_defaults(saved_defaults):
     merged["save_analysis_output"] = bool(merged.get("save_analysis_output", DEFAULTS["save_analysis_output"]))
     merged["save_threshold_output"] = bool(merged.get("save_threshold_output", DEFAULTS["save_threshold_output"]))
     merged["show_best_fit"] = bool(merged.get("show_best_fit", DEFAULTS["show_best_fit"]))
+    merged["show_analysis_overlay"] = bool(merged.get("show_analysis_overlay", DEFAULTS["show_analysis_overlay"]))
     merged["use_multi_threshold"] = bool(merged.get("use_multi_threshold", DEFAULTS["use_multi_threshold"]))
 
     merged["preview_mode"] = merged.get("preview_mode") if merged.get("preview_mode") in ("analysis", "threshold") else DEFAULTS["preview_mode"]
@@ -285,9 +297,11 @@ class JetAnalysisGUI:
         "Output File Name": "Base name used to auto-fill saved output file names and graph exports.",
         "Analysis Output": "Choose whether to save the analysis-overlay video, which format to use, and exactly where to store it.",
         "Threshold Output": "Choose whether to save the threshold video, which format to use, and exactly where to store it.",
+        "Export Package": "Creates a timestamped folder with the current graph image, graph CSV, project JSON, any saved output videos that exist, and a quick summary text file.",
         "Preview Mode": "Choose what to display during processing: analysis overlay or threshold/binary output.",
         "Frame Range Selection": "Choose the start and end frame to process. Drag red handles; start and end previews update as you move.",
         "Crop Controls": "Adjust the crop region directly on the preview, then press Save Crop to apply it for processing.",
+        "Analyze Every N Frames": "Sample the selected frame range by analyzing every Nth frame. Use 1 for high detail and larger values for faster preview runs.",
         "Pixels per Column": "Horizontal sampling step. Lower values sample more densely and may be slower.",
         "Standard Deviations": "Controls confidence band width around the detected centerline. Higher values create a wider band.",
         "Graph Standard Deviations": "Controls the plotted band width around the final mean centerline profile.",
@@ -325,6 +339,7 @@ class JetAnalysisGUI:
 
         self.video_path = tk.StringVar()
         self.video_source_var = tk.StringVar(value="Video File")
+        self.saved_video_session = None
         self.camera_index_var = tk.StringVar(value="0")
         self.available_cameras = {}
         self.output_dir = tk.StringVar(value=self.app_defaults["output_dir"])
@@ -336,6 +351,7 @@ class JetAnalysisGUI:
         self.analysis_output_path_var = tk.StringVar(value=self.app_defaults["analysis_output_path"])
         self.threshold_output_path_var = tk.StringVar(value=self.app_defaults["threshold_output_path"])
         self.preview_mode = tk.StringVar(value=self.app_defaults["preview_mode"])
+        self.show_analysis_overlay_var = tk.BooleanVar(value=self.app_defaults["show_analysis_overlay"])
         self.threshold_offset_var = tk.IntVar(value=self.app_defaults["threshold_offset"])
         self.live_frame_limit = tk.StringVar(value=self.app_defaults["live_frame_limit"])
 
@@ -411,6 +427,10 @@ class JetAnalysisGUI:
         self.final_mean_profile = None
         self.final_std_profile = None
         self.final_centerline_samples = None
+        self.imported_profile_data = None
+        self.imported_distribution_data = None
+        self.imported_table_path = ""
+        self.imported_table_rows = None
         self.graph_stdevs_var = tk.StringVar(value=self.app_defaults["graph_stdevs"])
         self.graph_unit_label = "px"
         self.graph_unit_scale = 1.0
@@ -475,6 +495,7 @@ class JetAnalysisGUI:
         self.detect_available_cameras()
         self.reset_defaults()
         self.bind_validation_hooks()
+        self.bind_keyboard_shortcuts()
         self.set_range_controls_enabled(True)
         self.refresh_run_state()
         base_dir = os.path.dirname(__file__)
@@ -531,6 +552,22 @@ class JetAnalysisGUI:
             fieldbackground=[("readonly", self.CARD_BG)],
             selectbackground=[("readonly", self.ACCENT_SOFT)],
             selectforeground=[("readonly", self.TEXT_COLOR)],
+        )
+        self.ttk_style.configure(
+            "Modern.TMenubutton",
+            background=self.CARD_BG,
+            foreground=self.TEXT_COLOR,
+            arrowcolor=self.MUTED_TEXT_COLOR,
+            bordercolor=self.ENTRY_BORDER,
+            lightcolor=self.CARD_BG,
+            darkcolor=self.CARD_BG,
+            padding=6,
+        )
+        self.ttk_style.map(
+            "Modern.TMenubutton",
+            background=[("active", self.CARD_BG), ("disabled", self.CARD_BG)],
+            foreground=[("disabled", "gray55")],
+            arrowcolor=[("disabled", "gray65")],
         )
         self.ttk_style.configure(
             "Modern.Horizontal.TProgressbar",
@@ -864,23 +901,39 @@ class JetAnalysisGUI:
         )
         self.validation_label.pack(pady=(6, 2), anchor="w")
 
-        self.create_button(basic_tab, text="Reset Basic Tab", command=self.reset_basic_tab).pack(pady=5)
-        project_row = ctk.CTkFrame(basic_tab, fg_color="transparent")
-        project_row.pack(pady=(2, 2))
+        project_actions_grid = ctk.CTkFrame(basic_tab, fg_color="transparent")
+        project_actions_grid.pack(pady=(2, 4))
         self.create_button(
-            project_row,
+            project_actions_grid,
             text="Save Project",
-            command=self.save_project
-        ).pack(side="left", padx=(0, 6))
+            command=self.save_project,
+            width=170,
+        ).grid(row=0, column=0, padx=6, pady=4)
         self.create_button(
-            project_row,
+            project_actions_grid,
             text="Load Project",
-            command=self.load_project
-        ).pack(side="left")
+            command=self.load_project,
+            width=170,
+        ).grid(row=0, column=1, padx=6, pady=4)
+        self.export_package_button = self.create_button(
+            project_actions_grid,
+            text="Export Package",
+            command=self.export_package,
+            width=170,
+        )
+        self.export_package_button.grid(row=1, column=1, padx=6, pady=4)
+        self.attach_tooltip(self.export_package_button, "Export Package")
+        self.create_button(
+            project_actions_grid,
+            text="Open Documentation Page",
+            command=self.open_documentation_page,
+            width=170,
+        ).grid(row=1, column=0, padx=6, pady=4)
         self.create_button(
             basic_tab,
-            text="Open Documentation Page",
-            command=self.open_documentation_page
+            text="Reset Basic Tab",
+            command=self.reset_basic_tab,
+            width=170,
         ).pack(pady=(2, 6))
 
         # ================= ADVANCED TAB =================
@@ -917,6 +970,17 @@ class JetAnalysisGUI:
             jump_row, text="Jump to End", command=self.jump_to_end_frame)
         self.jump_end_button.grid(row=0, column=1)
 
+        analyze_every_row = ctk.CTkFrame(advanced_tab, fg_color="transparent")
+        analyze_every_row.pack(pady=(10, 0), anchor="w", padx=8)
+        analyze_every_label = ctk.CTkLabel(analyze_every_row, text="Analyze every", text_color=self.TEXT_COLOR)
+        analyze_every_label.pack(side="left")
+        self.analyze_every_entry = self.create_entry(analyze_every_row, width=72)
+        self.analyze_every_entry.insert(0, self.app_defaults.get("frame_stride", DEFAULTS["frame_stride"]))
+        self.analyze_every_entry.pack(side="left", padx=(6, 6))
+        ctk.CTkLabel(analyze_every_row, text="frames", text_color=self.TEXT_COLOR).pack(side="left")
+        self.attach_tooltip(analyze_every_label, "Analyze Every N Frames")
+        self.attach_tooltip(self.analyze_every_entry, "Analyze Every N Frames")
+
         self.pixel_entry = self.labeled_entry(
             advanced_tab, "Pixels per Column", "pixels_per_col")
         self.stdev_entry = self.labeled_entry(
@@ -935,6 +999,15 @@ class JetAnalysisGUI:
             command=self.on_preview_mode_changed,
             text_color=self.TEXT_COLOR,
         ).pack(anchor="w", padx=8)
+
+        self.show_analysis_overlay_checkbox = ctk.CTkCheckBox(
+            self.threshold_tab,
+            text="Show analysis overlay on preview",
+            variable=self.show_analysis_overlay_var,
+            command=self.on_analysis_overlay_toggle,
+            text_color=self.TEXT_COLOR,
+        )
+        self.show_analysis_overlay_checkbox.pack(anchor="w", padx=26, pady=(2, 0))
 
         ctk.CTkRadioButton(
             self.threshold_tab,
@@ -1231,11 +1304,6 @@ class JetAnalysisGUI:
         graph_controls_outer_right = tk.Frame(graph_controls, bg="white")
         graph_controls_outer_right.grid(row=0, column=3, sticky="nw")
 
-        self.labeled_header(graph_controls_left, "Graph Standard Deviations", pady=(0, 0))
-        self.graph_stdev_entry = self.create_entry(graph_controls_left, textvariable=self.graph_stdevs_var, width=80)
-        self.graph_stdev_entry.pack(anchor="w")
-        self.attach_tooltip(self.graph_stdev_entry, "Graph Standard Deviations")
-
         self.create_button(
             graph_controls_left,
             text="Save Graph Image",
@@ -1245,6 +1313,21 @@ class JetAnalysisGUI:
             graph_controls_left,
             text="Save Graph Data (CSV)",
             command=self.save_graph_data_csv
+        ).pack(anchor="w", pady=(6, 0))
+        self.create_button(
+            graph_controls_left,
+            text="Import Graph File",
+            command=self.import_graph_csv
+        ).pack(anchor="w", pady=(6, 0))
+        self.create_button(
+            graph_controls_left,
+            text="Map Imported Columns",
+            command=self.import_graph_csv_with_mapping
+        ).pack(anchor="w", pady=(6, 0))
+        self.create_button(
+            graph_controls_left,
+            text="Clear Imported File",
+            command=self.clear_imported_graph_data
         ).pack(anchor="w", pady=(6, 0))
 
         self.graph_units_label = tk.Label(
@@ -1275,29 +1358,29 @@ class JetAnalysisGUI:
         self.attach_tooltip(self.graph_view_combo, "Graph View")
 
         self.graph_distribution_kind_header_row = self.labeled_header(graph_controls_far_right, "Distribution Values", pady=(8, 0))
-        self.graph_distribution_kind_combo = ttk.Combobox(
+        self.graph_distribution_kind_combo = ttk.Menubutton(
             graph_controls_far_right,
             textvariable=self.graph_distribution_kind_var,
-            values=["Residuals", "Positions", "Z-Scores"],
-            state="readonly",
             width=18,
-            style="Modern.TCombobox",
+            style="Modern.TMenubutton",
         )
         self.graph_distribution_kind_combo.pack(anchor="w")
-        self.graph_distribution_kind_combo.bind("<<ComboboxSelected>>", lambda _event: self.redraw_graph())
+        self.graph_distribution_kind_menu = tk.Menu(self.graph_distribution_kind_combo, tearoff=0)
+        self.graph_distribution_kind_combo.configure(menu=self.graph_distribution_kind_menu)
+        self.configure_distribution_kind_menu()
         self.attach_tooltip(self.graph_distribution_kind_combo, "Distribution Values")
 
         self.graph_histogram_scope_header_row = self.labeled_header(graph_controls_far_right, "Histogram Scope", pady=(8, 0))
-        self.graph_histogram_scope_combo = ttk.Combobox(
+        self.graph_histogram_scope_combo = ttk.Menubutton(
             graph_controls_far_right,
             textvariable=self.graph_histogram_scope_var,
-            values=["All Columns", "All Columns (Combined)", "Selected Column"],
-            state="readonly",
             width=18,
-            style="Modern.TCombobox",
+            style="Modern.TMenubutton",
         )
         self.graph_histogram_scope_combo.pack(anchor="w")
-        self.graph_histogram_scope_combo.bind("<<ComboboxSelected>>", lambda _event: self.redraw_graph())
+        self.graph_histogram_scope_menu = tk.Menu(self.graph_histogram_scope_combo, tearoff=0)
+        self.graph_histogram_scope_combo.configure(menu=self.graph_histogram_scope_menu)
+        self.configure_histogram_scope_menu()
         self.attach_tooltip(self.graph_histogram_scope_combo, "Histogram Scope")
 
         distribution_column_row = tk.Frame(graph_controls_outer_right, bg="white")
@@ -1341,6 +1424,11 @@ class JetAnalysisGUI:
             justify="left",
             wraplength=320,
         ).pack(anchor="w", pady=(0, 6))
+
+        self.labeled_header(graph_controls_right, "Graph Standard Deviations", pady=(0, 0))
+        self.graph_stdev_entry = self.create_entry(graph_controls_right, textvariable=self.graph_stdevs_var, width=80)
+        self.graph_stdev_entry.pack(anchor="w")
+        self.attach_tooltip(self.graph_stdev_entry, "Graph Standard Deviations")
 
         self.labeled_header(graph_controls_right, "Graph Fit Degree", pady=(8, 0))
         self.graph_fit_degree_entry = self.create_entry(graph_controls_right, textvariable=self.graph_fit_degree_var, width=80)
@@ -1427,6 +1515,7 @@ class JetAnalysisGUI:
     def on_video_source_change(self, event=None):
         source = self.video_source_var.get()
         if source == "Live Camera":
+            self.saved_video_session = self.capture_video_file_session_state()
             self.select_video_button.pack_forget()
             self.video_label.configure(text="Live from webcam (press Run to start analysis)")
             self.video_path.set("")  # Clear video path
@@ -1460,122 +1549,128 @@ class JetAnalysisGUI:
             self.live_limit_row.pack_forget()
             # Stop any live preview
             self.stop_live_preview()
+            if not self.restore_video_file_session_state():
+                self.video_label.configure(text="No video selected")
+                self.set_range_controls_enabled(False)  # Will be enabled on video load
             self.refresh_run_state()
 
-    def get_camera_device_names(self):
-        """Get actual camera device names from Windows using multiple methods."""
-        camera_names_dict = {}
-        
-        # Try WMI first
-        try:
-            import wmi
-            w = wmi.WMI()
-            cameras = w.query("SELECT Name, Description FROM Win32_PnPDevice WHERE ClassGuid='{6bdd1fc6-810f-11d0-bec7-08002be2092f}' OR (Name LIKE '%camera%' OR Name LIKE '%webcam%' OR Name LIKE '%droid%')")
-            for idx, camera in enumerate(cameras):
-                device_name = camera.Name if hasattr(camera, 'Name') and camera.Name else camera.Description if hasattr(camera, 'Description') else f"Camera {idx}"
-                camera_names_dict[idx] = device_name
-                print(f"DEBUG: Found camera {idx} via WMI: {device_name}")
-        except Exception as e:
-            print(f"DEBUG: WMI query failed ({e}), using generic names")
-        
-        # Try registry as fallback
-        if not camera_names_dict:
-            try:
-                import winreg
-                # Look for USB camera entries
-                key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, 
-                    r"SYSTEM\CurrentControlSet\Enum\USB")
-                idx = 0
-                for i in range(100):
-                    try:
-                        subkey_name = winreg.EnumKey(key, i)
-                        if 'camera' in subkey_name.lower() or 'vid' in subkey_name.lower():
-                            try:
-                                subkey = winreg.OpenKey(key, subkey_name)
-                                friendly_name = winreg.QueryValueEx(subkey, 'FriendlyName')[0]
-                                camera_names_dict[i] = friendly_name
-                                print(f"DEBUG: Found camera {i} via registry: {friendly_name}")
-                                winreg.CloseKey(subkey)
-                            except:
-                                pass
-                    except OSError:
-                        break
-                winreg.CloseKey(key)
-            except Exception as reg_e:
-                print(f"DEBUG: Registry approach also failed ({reg_e})")
-        
-        return camera_names_dict
+    def capture_video_file_session_state(self):
+        """Capture the current video-file session so it can be restored after live mode."""
+        video_path = self.video_path.get().strip()
+        if not video_path:
+            return None
+
+        return {
+            "video_path": video_path,
+            "video_label": self.video_label.cget("text"),
+            "output_dir": self.output_dir.get(),
+            "analysis_output_path": self.analysis_output_path_var.get(),
+            "threshold_output_path": self.threshold_output_path_var.get(),
+            "total_frames": int(self.total_frames),
+            "current_preview_frame_index": int(self.current_preview_frame_index),
+            "start_frame": int(self.start_frame_var.get()),
+            "end_frame": int(self.end_frame_var.get()),
+            "start_frame_text": self.start_frame_text.get(),
+            "end_frame_text": self.end_frame_text.get(),
+            "crop_left": int(self.crop_left),
+            "crop_top": int(self.crop_top),
+            "crop_right": int(self.crop_right),
+            "crop_bottom": int(self.crop_bottom),
+            "calibration_line_img": copy.deepcopy(self.calibration_line_img),
+            "nozzle_origin_img": copy.deepcopy(self.nozzle_origin_img),
+            "graph_unit_scale": float(self.graph_unit_scale),
+            "graph_unit_label": self.graph_unit_label,
+            "calibration_status": self.calibration_status_var.get(),
+            "nozzle_status": self.nozzle_status_var.get(),
+            "calibration_distance": self.calibration_distance_var.get(),
+            "calibration_units": self.calibration_units_var.get(),
+        }
+
+    def restore_video_file_session_state(self):
+        """Restore the previous video-file session after leaving live camera mode."""
+        session = self.saved_video_session
+        if not session:
+            return False
+
+        video_path = str(session.get("video_path", "")).strip()
+        if not video_path:
+            return False
+
+        self.load_video(video_path)
+        self.video_label.configure(text=session.get("video_label") or os.path.basename(video_path))
+        self.output_dir.set(session.get("output_dir", self.output_dir.get()))
+        self.analysis_output_path_var.set(session.get("analysis_output_path", self.analysis_output_path_var.get()))
+        self.threshold_output_path_var.set(session.get("threshold_output_path", self.threshold_output_path_var.get()))
+
+        max_frame_index = max(0, self.total_frames - 1)
+        start_frame = max(0, min(int(session.get("start_frame", 0)), max_frame_index))
+        end_frame = max(start_frame, min(int(session.get("end_frame", max_frame_index)), max_frame_index))
+        self.range_slider.set_range(start_frame, end_frame)
+        self.apply_range(start_frame, end_frame)
+        self.start_frame_text.set(session.get("start_frame_text", str(start_frame)))
+        self.end_frame_text.set(session.get("end_frame_text", str(end_frame)))
+
+        preview_frame_index = max(0, min(int(session.get("current_preview_frame_index", start_frame)), max_frame_index))
+        self.preview_frame_at(preview_frame_index)
+
+        if self.original_crop_frame is not None:
+            frame_height, frame_width = self.original_crop_frame.shape[:2]
+            saved_left = int(session.get("crop_left", 0))
+            saved_top = int(session.get("crop_top", 0))
+            saved_right = int(session.get("crop_right", frame_width))
+            saved_bottom = int(session.get("crop_bottom", frame_height))
+            if 0 <= saved_left < saved_right <= frame_width and 0 <= saved_top < saved_bottom <= frame_height:
+                self.crop_left = saved_left
+                self.crop_top = saved_top
+                self.crop_right = saved_right
+                self.crop_bottom = saved_bottom
+                self.update_crop_size_label()
+                self.preview_frame_at(preview_frame_index)
+
+        self.calibration_line_img = copy.deepcopy(session.get("calibration_line_img"))
+        self.nozzle_origin_img = copy.deepcopy(session.get("nozzle_origin_img"))
+        self.graph_unit_scale = float(session.get("graph_unit_scale", 1.0))
+        self.graph_unit_label = session.get("graph_unit_label", "px")
+        self.calibration_status_var.set(session.get("calibration_status", "Calibration: not set"))
+        self.nozzle_status_var.set(session.get("nozzle_status", "Nozzle origin: not set"))
+        self.calibration_distance_var.set(session.get("calibration_distance", ""))
+        self.calibration_units_var.set(session.get("calibration_units", self.calibration_units_var.get()))
+        if self.graph_unit_label == "px":
+            self.graph_units_label.configure(text="Units: px (uncalibrated)")
+        else:
+            self.graph_units_label.configure(
+                text=f"Units: {self.graph_unit_label} ({self.graph_unit_scale:.6g} {self.graph_unit_label}/px)"
+            )
+
+        if self.last_display_frame is not None:
+            self.display_frame(self.last_display_frame)
+
+        return True
 
     def detect_available_cameras(self):
         """Detect available cameras on the system."""
-        import cv2
-        import sys
-        import os
-        
         self.available_cameras = {}
         camera_names = []
-        
-        # Get actual device names from Windows
-        wmi_names = self.get_camera_device_names()
-        
-        # Suppress OpenCV C++ errors by redirecting file descriptors
-        old_stdout = os.dup(1)
-        old_stderr = os.dup(2)
-        devnull = os.open(os.devnull, os.O_WRONLY)
-        
-        try:
-            os.dup2(devnull, 1)
-            os.dup2(devnull, 2)
-            
-            # Check up to 10 camera indices
-            found_idx = 0
-            for idx in range(10):
-                cap = cv2.VideoCapture(idx)
-                if cap.isOpened():
-                    # Get camera name/properties
-                    ret, _ = cap.read()
-                    if ret:
-                        # Use WMI name if available, otherwise use generic name
-                        if idx in wmi_names:
-                            camera_label = wmi_names[idx]
-                        else:
-                            camera_label = f"Camera {idx}"
-                        
-                        self.available_cameras[str(idx)] = camera_label
-                        camera_names.append(camera_label)
-                        found_idx += 1
-                    cap.release()
-                else:
-                    cap.release()
-        finally:
-            # Restore stdout and stderr
-            os.dup2(old_stdout, 1)
-            os.dup2(old_stderr, 2)
-            os.close(old_stdout)
-            os.close(old_stderr)
-            os.close(devnull)
-        
+
+        for camera in list_available_cameras():
+            display_name = camera["display_name"]
+            self.available_cameras[display_name] = camera
+            camera_names.append(display_name)
+
         # Update combobox with available cameras
         if camera_names:
             self.camera_combo['values'] = camera_names
-            # Set to first detected camera (which now has its proper name)
-            if camera_names:
-                self.camera_index_var.set(camera_names[0])
+            self.camera_index_var.set(camera_names[0])
         else:
             self.camera_combo['values'] = ["No cameras found"]
             self.camera_index_var.set("No cameras found")
 
-    def get_camera_index_from_name(self, device_name):
-        """Map device name to camera index."""
-        # Look through available_cameras dict to find matching index
-        for idx_str, camera_name in self.available_cameras.items():
-            if camera_name == device_name:
-                try:
-                    return int(idx_str)
-                except ValueError:
-                    return 0
-        # Fallback to 0 if not found
-        return 0
+    def get_camera_source_from_name(self, device_name):
+        """Map the selected display name to the camera descriptor."""
+        return self.available_cameras.get(
+            device_name,
+            {"backend": "opencv", "index": 0, "display_name": device_name or "Camera 0"},
+        )
 
     def on_camera_selected(self, event=None):
         """Handle camera selection change - restart preview with new camera."""
@@ -1743,6 +1838,49 @@ class JetAnalysisGUI:
 
     def save_graph_data_csv(self):
         self.graph_controller.save_graph_data_csv()
+
+    def import_graph_csv(self):
+        self.graph_controller.import_graph_csv()
+
+    def import_graph_csv_with_mapping(self):
+        self.graph_controller.import_graph_csv(force_mapping=True)
+
+    def clear_imported_graph_data(self):
+        self.graph_controller.clear_imported_graph_data()
+
+    def configure_distribution_kind_menu(self, disabled_options=None):
+        options = ["Residuals", "Positions", "Z-Scores"]
+        disabled = set(disabled_options or [])
+        menu = getattr(self, "graph_distribution_kind_menu", None)
+        if menu is None:
+            return
+
+        menu.delete(0, "end")
+        for option in options:
+            menu.add_radiobutton(
+                label=option,
+                value=option,
+                variable=self.graph_distribution_kind_var,
+                command=self.redraw_graph,
+                state=("disabled" if option in disabled else "normal"),
+            )
+
+    def configure_histogram_scope_menu(self, disabled_options=None):
+        options = ["All Columns", "All Columns (Combined)", "Selected Column"]
+        disabled = set(disabled_options or [])
+        menu = getattr(self, "graph_histogram_scope_menu", None)
+        if menu is None:
+            return
+
+        menu.delete(0, "end")
+        for option in options:
+            menu.add_radiobutton(
+                label=option,
+                value=option,
+                variable=self.graph_histogram_scope_var,
+                command=self.redraw_graph,
+                state=("disabled" if option in disabled else "normal"),
+            )
 
     def set_range_controls_enabled(self, enabled):
         self.range_controller.set_range_controls_enabled(enabled)
@@ -2240,10 +2378,14 @@ class JetAnalysisGUI:
                 self.original_crop_frame = self.last_raw_frame.copy()
             else:
                 # Fallback: capture directly from camera
-                camera_index = self.get_camera_index_from_name(self.camera_index_var.get())
-                cap = cv2.VideoCapture(camera_index)
-                ret, frame = cap.read()
-                cap.release()
+                camera_source = self.get_camera_source_from_name(self.camera_index_var.get())
+                cap = create_camera_capture(camera_source)
+                ret, frame = False, None
+                try:
+                    if cap.open():
+                        ret, frame = cap.read()
+                finally:
+                    cap.release()
                 if not ret:
                     return
                 self.original_crop_frame = frame.copy()
@@ -2507,9 +2649,9 @@ class JetAnalysisGUI:
         
         self.live_preview_active = True
         
-        # Get selected camera index from device name
+        # Get selected camera descriptor from device name
         selected_camera = self.camera_index_var.get()
-        camera_idx = self.get_camera_index_from_name(selected_camera)
+        camera_source = self.get_camera_source_from_name(selected_camera)
         
         # Build preview config with current crop settings
         crop_left = self.crop_left if self.crop_left < self.crop_right else 0
@@ -2525,11 +2667,12 @@ class JetAnalysisGUI:
             'threshold_offset': self.threshold_offset_var.get(),
             'pixels_per_col': 1,
             'stdevs': 0,
-            'preview_mode': self.preview_mode.get()
+            'preview_mode': self.preview_mode.get(),
+            'show_analysis_overlay': self.show_analysis_overlay_var.get(),
         }
         
         # Start preview without analysis (analysis_config has preview_mode)
-        self.live_engine = LiveEngine(gui=self, camera_index=camera_idx, analysis_config=preview_config)
+        self.live_engine = LiveEngine(gui=self, camera_source=camera_source, analysis_config=preview_config)
         self.live_engine.start(analyze=False)
         # Status will be updated to "Live preview: Camera ready" once first frame is received
         # Don't call refresh_run_state() here as it would override the "Connecting..." message
@@ -2553,6 +2696,10 @@ class JetAnalysisGUI:
                 self.validation_message.set("\n".join(errors))
                 return
 
+            self.imported_profile_data = None
+            self.imported_distribution_data = None
+            self.imported_table_path = ""
+            self.imported_table_rows = None
             config = self.build_config()
             self.is_running = True
             self.stop_event = threading.Event()
@@ -2561,10 +2708,7 @@ class JetAnalysisGUI:
             self.analysis_was_stopped = False
 
             self.set_processing_controls(True)
-
-            start = self.start_frame_var.get()
-            end = self.end_frame_var.get()
-            self.total_frames_to_process = max(1, end - start + 1)
+            self.total_frames_to_process = config.num_frames
 
             self.progress["maximum"] = self.total_frames_to_process
             self.progress["value"] = 0
@@ -2582,6 +2726,10 @@ class JetAnalysisGUI:
                 self.live_engine.stop()
                 self.live_engine = None
             
+            self.imported_profile_data = None
+            self.imported_distribution_data = None
+            self.imported_table_path = ""
+            self.imported_table_rows = None
             self.live_preview_active = False
             self.analysis_error = None
             self.analysis_was_stopped = False
@@ -2589,9 +2737,9 @@ class JetAnalysisGUI:
             self.reset_runtime_state()
             self.set_status("Starting live analysis...", "normal")
             
-            # Get selected camera index from device name
+            # Get selected camera descriptor from device name
             selected_camera = self.camera_index_var.get()
-            camera_idx = self.get_camera_index_from_name(selected_camera)
+            camera_source = self.get_camera_source_from_name(selected_camera)
             
             # Build analysis config for live engine
             # Use default crop values if not set by user
@@ -2617,12 +2765,14 @@ class JetAnalysisGUI:
                 'crop_top': crop_top,
                 'crop_bottom': crop_bottom,
                 'threshold_offset': self.threshold_offset_var.get(),
+                'frame_stride': max(1, self.safe_int(self.analyze_every_entry.get()) or 1),
                 'pixels_per_col': max(1, self.safe_int(self.pixel_entry.get()) or 3),
                 'stdevs': max(0, self.safe_int(self.stdev_entry.get()) or 2),
                 'avg_line_thickness': 2,
                 'show_confidence': True,
                 'confidence_mode': self.preview_mode.get() if self.preview_mode.get() == 'analysis' else 'band',
                 'preview_mode': self.preview_mode.get(),
+                'show_analysis_overlay': self.show_analysis_overlay_var.get(),
                 'max_frames': max_frames,
                 'use_multi_threshold': self.use_multi_threshold_var.get(),
                 'multi_threshold_offsets': self.get_multi_threshold_offsets(),
@@ -2657,7 +2807,7 @@ class JetAnalysisGUI:
             self.stop_event = threading.Event()
             self.live_engine = LiveEngine(
                 gui=self, 
-                camera_index=camera_idx, 
+                camera_source=camera_source, 
                 analysis_config=live_analysis_config,
                 analysis_output_path=analysis_output_path,
                 threshold_output_path=threshold_output_path,
@@ -3047,6 +3197,13 @@ class JetAnalysisGUI:
             # Update static preview (video file or recorded frame)
             self.update_post_analysis_preview()
 
+    def on_analysis_overlay_toggle(self):
+        """Show or hide the analysis overlay in preview mode."""
+        source = self.video_source_var.get()
+        if source == "Live Camera" and self.live_engine and self.live_engine.analysis_config:
+            self.live_engine.analysis_config['show_analysis_overlay'] = self.show_analysis_overlay_var.get()
+        self.update_post_analysis_preview()
+
     def update_post_analysis_preview(self):
         self.display_controller.update_post_analysis_preview()
 
@@ -3096,6 +3253,7 @@ class JetAnalysisGUI:
             "multi_threshold_offsets": [var.get() for var in self.multi_threshold_offsets],
             "multi_threshold_weights": [var.get() for var in self.multi_threshold_weights],
             "multi_threshold_colors": list(self.multi_threshold_colors),
+            "frame_stride": self.safe_int(self.analyze_every_entry.get()) or self.app_defaults["frame_stride"],
             "pixels_per_col": self.safe_int(self.pixel_entry.get()) or self.app_defaults["pixels_per_col"],
             "stdevs": self.safe_int(self.stdev_entry.get()) or self.app_defaults["stdevs"],
             "output_name": self.output_name_entry.get().strip() or self.app_defaults["output_name"],
@@ -3108,6 +3266,7 @@ class JetAnalysisGUI:
             "analysis_output_path": self.analysis_output_path_var.get().strip(),
             "threshold_output_path": self.threshold_output_path_var.get().strip(),
             "preview_mode": self.preview_mode.get(),
+            "show_analysis_overlay": self.show_analysis_overlay_var.get(),
             "live_frame_limit": self.live_frame_limit.get().strip(),
             "num_thresholds": self.num_thresholds_var.get(),
             "graph_stdevs": self.graph_stdevs_var.get().strip(),
@@ -3176,6 +3335,7 @@ class JetAnalysisGUI:
         self.refresh_output_controls_state()
 
         self.preview_mode.set(self.app_defaults["preview_mode"])
+        self.show_analysis_overlay_var.set(self.app_defaults["show_analysis_overlay"])
         self.threshold_offset_var.set(self.app_defaults["threshold_offset"])
         self.threshold_value_label.configure(text=str(self.app_defaults["threshold_offset"]))
         self.use_multi_threshold_var.set(self.app_defaults["use_multi_threshold"])
@@ -3194,6 +3354,7 @@ class JetAnalysisGUI:
         self.update_actual_threshold_display()
         self.apply_threshold_settings_to_configs()
 
+        self._set_entry_text(self.analyze_every_entry, self.app_defaults["frame_stride"])
         self._set_entry_text(self.pixel_entry, self.app_defaults["pixels_per_col"])
         self._set_entry_text(self.stdev_entry, self.app_defaults["stdevs"])
 
@@ -3238,6 +3399,7 @@ class JetAnalysisGUI:
 
     def reset_threshold_tab(self):
         self.preview_mode.set(self.app_defaults["preview_mode"])
+        self.show_analysis_overlay_var.set(self.app_defaults["show_analysis_overlay"])
         self.threshold_offset_var.set(self.app_defaults["threshold_offset"])
         self.threshold_value_label.configure(text=str(self.app_defaults["threshold_offset"]))
         self.use_multi_threshold_var.set(self.app_defaults["use_multi_threshold"])
@@ -3259,6 +3421,7 @@ class JetAnalysisGUI:
         self.refresh_run_state()
 
     def reset_advanced_tab(self):
+        self._set_entry_text(self.analyze_every_entry, self.app_defaults["frame_stride"])
         self._set_entry_text(self.pixel_entry, self.app_defaults["pixels_per_col"])
         self._set_entry_text(self.stdev_entry, self.app_defaults["stdevs"])
         if self.total_frames > 0:
@@ -3276,6 +3439,10 @@ class JetAnalysisGUI:
         self.refresh_run_state()
 
     def reset_graph_tab(self):
+        self.imported_profile_data = None
+        self.imported_distribution_data = None
+        self.imported_table_path = ""
+        self.imported_table_rows = None
         self.graph_stdevs_var.set(self.app_defaults["graph_stdevs"])
         self.graph_fit_degree_var.set(self.app_defaults["graph_fit_degree"])
         self.show_best_fit_var.set(self.app_defaults["show_best_fit"])
@@ -3294,15 +3461,18 @@ class JetAnalysisGUI:
         self.graph_x_max_var.set(self.app_defaults["graph_x_max"])
         self.graph_y_min_var.set(self.app_defaults["graph_y_min"])
         self.graph_y_max_var.set(self.app_defaults["graph_y_max"])
+        if self.graph_unit_label == "px":
+            self.graph_units_label.configure(text="Units: px (uncalibrated)")
+        else:
+            self.graph_units_label.configure(
+                text=f"Units: {self.graph_unit_label} | Scale: {self.graph_unit_scale:.6g} {self.graph_unit_label}/px"
+            )
         self.set_graph_fit_equation_text("Best fit: n/a")
         self.redraw_graph()
         self.refresh_run_state()
 
     def attach_tooltip(self, widget, label_key):
-        help_text = self.FIELD_HELP.get(label_key)
-        if not help_text:
-            return
-        self._tooltips.append(HoverTooltip(widget, help_text))
+        return
 
     def bind_validation_hooks(self):
         for entry in (
@@ -3310,6 +3480,7 @@ class JetAnalysisGUI:
             self.threshold_output_name_entry,
             self.analysis_output_entry,
             self.threshold_output_entry,
+            self.analyze_every_entry,
             self.pixel_entry,
             self.stdev_entry,
             self.graph_stdev_entry,
@@ -3333,6 +3504,33 @@ class JetAnalysisGUI:
         self.save_threshold_output_var.trace_add("write", lambda *_: self.refresh_output_controls_state())
         self.calibration_units_var.trace_add("write", lambda *_: self.redraw_graph())
 
+    def bind_keyboard_shortcuts(self):
+        self.root.bind_all("<Control-Tab>", self.on_cycle_tabs_shortcut)
+        self.root.bind_all("<Control-r>", self.on_run_shortcut)
+        self.root.bind_all("<Control-R>", self.on_run_shortcut)
+        self.root.bind_all("<Control-s>", self.on_stop_shortcut)
+        self.root.bind_all("<Control-S>", self.on_stop_shortcut)
+
+    def on_cycle_tabs_shortcut(self, _event=None):
+        tabs = list(self.notebook.tabs())
+        if not tabs:
+            return "break"
+        current_tab = self.notebook.select()
+        if current_tab not in tabs:
+            self.notebook.select(tabs[0])
+            return "break"
+        next_index = (tabs.index(current_tab) + 1) % len(tabs)
+        self.notebook.select(tabs[next_index])
+        return "break"
+
+    def on_run_shortcut(self, _event=None):
+        self.start_thread()
+        return "break"
+
+    def on_stop_shortcut(self, _event=None):
+        self.stop_analysis()
+        return "break"
+
     def on_user_input_changed(self, _event=None):
         self.update_output_path_defaults(force=False)
         self.on_range_entry_commit()
@@ -3353,6 +3551,7 @@ class JetAnalysisGUI:
             self.threshold_output_name_entry,
             self.analysis_output_entry,
             self.threshold_output_entry,
+            self.analyze_every_entry,
             self.pixel_entry,
             self.stdev_entry,
             self.start_entry,
@@ -3364,6 +3563,11 @@ class JetAnalysisGUI:
         # Video validation depends on source
         if source == "Video File" and not self.video_path.get():
             errors.append("Select a video file.")
+
+        frame_stride = self.safe_int(self.analyze_every_entry.get())
+        if frame_stride is None or frame_stride <= 0:
+            errors.append("Analyze every N frames must be an integer greater than 0.")
+            self.set_entry_validation_state(self.analyze_every_entry, True)
 
         pixels_per_col = self.safe_int(self.pixel_entry.get())
         if pixels_per_col is None or pixels_per_col <= 0:
@@ -3490,6 +3694,10 @@ class JetAnalysisGUI:
         self.final_mean_profile = None
         self.final_std_profile = None
         self.final_centerline_samples = None
+        self.imported_profile_data = None
+        self.imported_distribution_data = None
+        self.imported_table_path = ""
+        self.imported_table_rows = None
         self.set_graph_fit_equation_text("Best fit: n/a")
         self.progress["maximum"] = 1
         self.progress["value"] = 0
@@ -3549,7 +3757,8 @@ class JetAnalysisGUI:
 
         start = self.start_frame_var.get()
         end = self.end_frame_var.get()
-        num_frames = max(1, end - start + 1)
+        frame_stride = max(1, self.safe_int(self.analyze_every_entry.get()) or 1)
+        num_frames = max(1, ((end - start) // frame_stride) + 1)
 
         return JetAnalysisConfig(
             crop_left=self.crop_left,
@@ -3558,6 +3767,7 @@ class JetAnalysisGUI:
             crop_bottom=self.crop_bottom,
             num_frames=num_frames,
             threshold_offset=self.threshold_offset_var.get(),
+            frame_stride=frame_stride,
             pixels_per_col=int(self.pixel_entry.get()),
             avg_line_thickness=2,
             stdevs=int(self.stdev_entry.get()),
@@ -3581,6 +3791,12 @@ class JetAnalysisGUI:
     def save_project(self):
         self.project_state_controller.save_project()
 
+    def save_project_to_path(self, file_path, update_current_project_path=True):
+        return self.project_state_controller.save_project_to_path(
+            file_path,
+            update_current_project_path=update_current_project_path,
+        )
+
     def _set_entry_text(self, entry, value):
         entry.delete(0, tk.END)
         entry.insert(0, str(value))
@@ -3590,6 +3806,123 @@ class JetAnalysisGUI:
 
     def load_project(self):
         self.project_state_controller.load_project()
+
+    def build_export_package_summary(self, package_dir, included_files):
+        source_mode = self.video_source_var.get().strip() or "Video File"
+        if source_mode == "Live Camera":
+            source_detail = self.camera_index_var.get().strip() or "Live Camera"
+        else:
+            source_detail = self.video_path.get().strip() or "No video selected"
+
+        crop_width = max(0, int(self.crop_right) - int(self.crop_left))
+        crop_height = max(0, int(self.crop_bottom) - int(self.crop_top))
+        lines = [
+            "Jet Analyzer Export Package",
+            f"Created: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+            f"Package directory: {package_dir}",
+            "",
+            "Source",
+            f"Mode: {source_mode}",
+            f"Input: {source_detail}",
+            "",
+            "Run settings",
+            f"Frame range: {self.start_frame_var.get()} to {self.end_frame_var.get()}",
+            f"Analyze every: {self.analyze_every_entry.get().strip()} frame(s)",
+            f"Crop: left={self.crop_left}, top={self.crop_top}, right={self.crop_right}, bottom={self.crop_bottom} ({crop_width} x {crop_height} px)",
+            f"Preview mode: {self.preview_mode.get().strip()}",
+            f"Threshold offset: {self.threshold_offset_var.get()}",
+            f"Pixels per column: {self.pixel_entry.get().strip()}",
+            f"Standard deviations: {self.stdev_entry.get().strip()}",
+            f"Graph view: {self.graph_view_mode_var.get().strip()}",
+            f"Graph units: {self.graph_unit_label}",
+            f"Calibration: {self.calibration_status_var.get().strip()}",
+            f"Nozzle origin: {self.nozzle_status_var.get().strip()}",
+            "",
+            "Included files",
+        ]
+
+        for label, path in included_files:
+            lines.append(f"{label}: {os.path.basename(path)}")
+
+        return "\n".join(lines) + "\n"
+
+    def get_export_package_video_sources(self):
+        video_sources = []
+        output_configs = [
+            (
+                "Analysis video",
+                self.save_analysis_output_var.get(),
+                self.analysis_output_path_var.get(),
+                self.analysis_output_format_var.get(),
+            ),
+            (
+                "Threshold video",
+                self.save_threshold_output_var.get(),
+                self.threshold_output_path_var.get(),
+                self.threshold_output_format_var.get(),
+            ),
+        ]
+        for label, is_enabled, raw_path, format_label in output_configs:
+            if not is_enabled:
+                continue
+            source_path = self.ensure_output_path_extension(raw_path, format_label)
+            if source_path and os.path.isfile(source_path):
+                video_sources.append((label, source_path))
+        return video_sources
+
+    def export_package(self):
+        if self.is_running:
+            return
+
+        if self.render_graph_image() is None or self.build_graph_export_rows() is None:
+            messagebox.showinfo("No analysis results", "Run analysis first to export a results package.")
+            return
+
+        output_dir = self.get_default_output_dir()
+        base_name = self.output_name_entry.get().strip() or self.app_defaults["output_name"]
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        package_dir = os.path.join(output_dir, f"{base_name}_export_package_{timestamp}")
+        suffix = 2
+        while os.path.exists(package_dir):
+            package_dir = os.path.join(output_dir, f"{base_name}_export_package_{timestamp}_{suffix}")
+            suffix += 1
+
+        graph_image_path = os.path.join(package_dir, f"{base_name}_graph.png")
+        graph_csv_path = os.path.join(package_dir, f"{base_name}_graph_data.csv")
+        project_json_path = os.path.join(package_dir, f"{base_name}_project.json")
+        summary_path = os.path.join(package_dir, f"{base_name}_summary.txt")
+        included_files = [
+            ("Graph image", graph_image_path),
+            ("Graph data", graph_csv_path),
+            ("Project settings", project_json_path),
+            ("Summary", summary_path),
+        ]
+
+        try:
+            os.makedirs(package_dir, exist_ok=False)
+            self.graph_controller.save_graph_image_to_path(graph_image_path)
+            self.graph_controller.save_graph_data_csv_to_path(graph_csv_path)
+            self.save_project_to_path(project_json_path, update_current_project_path=False)
+            for label, source_path in self.get_export_package_video_sources():
+                destination_path = os.path.join(package_dir, os.path.basename(source_path))
+                root, ext = os.path.splitext(destination_path)
+                suffix = 2
+                while os.path.exists(destination_path):
+                    destination_path = f"{root}_{suffix}{ext}"
+                    suffix += 1
+                shutil.copy2(source_path, destination_path)
+                included_files.append((label, destination_path))
+            summary_text = self.build_export_package_summary(package_dir, included_files)
+            with open(summary_path, "w", encoding="utf-8") as handle:
+                handle.write(summary_text)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("Export failed", f"Could not create export package:\n{exc}")
+            return
+
+        messagebox.showinfo(
+            "Export package saved",
+            f"Saved export package to:\n{package_dir}",
+        )
 
     def try_auto_load_startup_project(self):
         self.project_state_controller.try_auto_load_startup_project()

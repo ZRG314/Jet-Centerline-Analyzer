@@ -23,6 +23,8 @@ class StatusController:
         app.threshold_output_name_entry.configure(state=disabled_state)
         app.analysis_output_check.configure(state=disabled_state)
         app.threshold_output_check.configure(state=disabled_state)
+        if hasattr(app, "export_package_button"):
+            app.export_package_button.configure(state=disabled_state)
         if running:
             app.analysis_output_entry.configure(state="disabled")
             app.analysis_output_browse_button.configure(state="disabled")

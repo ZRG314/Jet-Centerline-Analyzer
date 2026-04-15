@@ -190,7 +190,12 @@ class DisplayController:
         if app.last_analysis_frame is None:
             return
         if app.preview_mode.get() == "analysis":
-            app.display_frame(app.last_analysis_frame)
+            if app.show_analysis_overlay_var.get():
+                app.display_frame(app.last_analysis_frame)
+            elif app.last_raw_analysis_frame is not None:
+                app.display_frame(app.last_raw_analysis_frame)
+            else:
+                app.display_frame(app.last_analysis_frame)
         elif app.preview_mode.get() == "threshold":
             # Regenerate multi-threshold colored preview if enabled
             if app.use_multi_threshold_var.get():

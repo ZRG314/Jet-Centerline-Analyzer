@@ -62,6 +62,7 @@ class ProjectStateController:
             "threshold_output_format": app.threshold_output_format_var.get().strip(),
             "threshold_output_path": self._to_portable_path(app.threshold_output_path_var.get().strip(), project_file_path),
             "threshold_offset": str(app.threshold_offset_var.get()).strip(),
+            "frame_stride": app.analyze_every_entry.get().strip(),
             "pixels_per_col": app.pixel_entry.get().strip(),
             "stdevs": app.stdev_entry.get().strip(),
             "preview_mode": app.preview_mode.get().strip(),
@@ -89,6 +90,17 @@ class ProjectStateController:
             "nozzle_origin_img": list(app.nozzle_origin_img) if app.nozzle_origin_img is not None else None,
         }
 
+    def save_project_to_path(self, file_path, update_current_project_path=True):
+        app = self.app
+        state = self.collect_project_state(file_path)
+        output_dir = os.path.dirname(file_path) or "."
+        os.makedirs(output_dir, exist_ok=True)
+        with open(file_path, "w", encoding="utf-8") as handle:
+            json.dump(state, handle, indent=2)
+        if update_current_project_path:
+            app.project_path = file_path
+        return file_path
+
     def save_project(self):
         app = self.app
         if app.is_running:
@@ -104,11 +116,8 @@ class ProjectStateController:
         )
         if not file_path:
             return
-        state = self.collect_project_state(file_path)
         try:
-            with open(file_path, "w", encoding="utf-8") as handle:
-                json.dump(state, handle, indent=2)
-            app.project_path = file_path
+            self.save_project_to_path(file_path, update_current_project_path=True)
             messagebox.showinfo("Project saved", f"Saved project to:\n{file_path}")
         except OSError as exc:
             messagebox.showerror("Save failed", f"Could not save project:\n{exc}")
@@ -148,6 +157,7 @@ class ProjectStateController:
             app.threshold_offset_var.set(threshold_val)
         except (ValueError, TypeError):
             pass
+        self._set_entry_text(app.analyze_every_entry, state.get("frame_stride", app.analyze_every_entry.get()))
         self._set_entry_text(app.pixel_entry, state.get("pixels_per_col", app.pixel_entry.get()))
         self._set_entry_text(app.stdev_entry, state.get("stdevs", app.stdev_entry.get()))
 

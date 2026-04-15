@@ -2,12 +2,12 @@
 
 This guide explains how to use the application from the graphical interface only. It assumes you are operating the program via its windows and buttons — no programming or terminal steps are required.
 
-## What this app does (short)
+## What this app does 
 
 - Loads a video or live camera feed and locates the jet centerline in each frame.
 - Produces an annotated analysis video and summary graphs/data (exportable as image and CSV).
 
-## General workflow (what you'll do)
+## General workflow
 
 1. Choose or capture a video in the **Basic** tab.
 2. (Optional) Crop the preview so the image contains only the jet region.
@@ -19,6 +19,7 @@ This guide explains how to use the application from the graphical interface only
 ## Basic Tab — essential controls (what each item does)
 
 - **Video Source**: Pick `Video File` to analyze a file, or `Live Camera` to use a connected camera.
+- **Live Camera Note**: Standard webcams use the built-in OpenCV path. FLIR/Teledyne Blackfly S cameras use the Spinnaker camera path and require the Spinnaker SDK plus the PySpin Python wrapper to be installed on the PC.
 - **Select Video**: Opens a file chooser to pick a recorded video (only shown for file mode).
 - **Output File Name**: Base name for the analysis video the app will create.
 - **Output Directory**: Folder where the analysis video and exports are saved.
@@ -66,7 +67,7 @@ Use calibration when you need measurements in physical units instead of pixels.
 - **Threshold Preview**: Shows the binary image used for centerline extraction — useful for tuning the Threshold Offset.
 - **No Preview**: Turn this on for faster processing on long or high-resolution videos.
 
-## Recommended starting values (students)
+## Recommended starting values 
 
 - Threshold Offset: 15 (good starting point)
 - Pixels per Column: 3 (balance between speed and resolution)
@@ -74,11 +75,11 @@ Use calibration when you need measurements in physical units instead of pixels.
 
 These are sensible defaults; small adjustments may improve results for specific videos.
 
-## Example simple workflow (one-paragraph)
+## Example simple workflow 
 
 Open the app, select your recorded video in the Basic tab, then go to Crop and draw a tight box around the jet (exclude background lights). In Advanced select the full video or a sub-range you want analyzed. Leave the default processing values, then click Run. Watch the Analysis Preview to confirm the centerline looks reasonable; after the run, open the Graphs tab to save the graph image and CSV for your report.
 
-## Troubleshooting (student-focused)
+## Troubleshooting 
 
 - If the centerline is noisy or jumps:
   - Tighten the crop to exclude background light or nozzle reflections.
@@ -88,6 +89,7 @@ Open the app, select your recorded video in the Basic tab, then go to Crop and d
   - Check the **Output Directory** shown in the Basic tab and choose a different folder using the Browse button.
 - If live camera preview is blank:
   - Ensure the camera is connected and not used by another application; try switching back to Video File and re-selecting your recorded sample.
+  - For a Blackfly S USB3 camera, confirm the camera appears in Teledyne Spinnaker, then restart the Jet Analyzer so it can detect the camera through the Spinnaker/PySpin backend.
 
 ## What you will get after an analysis
 
@@ -95,14 +97,4 @@ Open the app, select your recorded video in the Basic tab, then go to Crop and d
 - A graph image showing mean centerline and confidence band.
 - A CSV file with numeric columns you can import into Excel or MATLAB for plotting or further analysis.
 
-## Support
 
-If you need help while using the GUI, note the settings you used (crop on/off, Threshold Offset, Pixels per Column, frame range) and show a screenshot of the preview and the Graphs tab to your instructor or project lead.
-
----
-
-This guide is focused purely on using the graphical interface. Tell me if you want a second page with annotated screenshots or a one-page cheat-sheet for lab handouts.
-
----
-
-This file is a starting point; I can expand any section (parameter reference, sample outputs, troubleshooting examples) next. Suggestion: add a `requirements.txt` and an example output snapshot directory under `results/` for user reference.

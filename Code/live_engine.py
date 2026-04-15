@@ -3,6 +3,7 @@ import cv2
 import time
 import numpy as np
 
+from camera_capture import create_camera_capture
 from analysis_engine import (
     threshold_frame,
     extract_centerline,
@@ -20,11 +21,11 @@ from analysis_engine import (
 class LiveEngine:
     """Manages live webcam input with optional real-time jet analysis and output saving."""
     
-    def __init__(self, gui, camera_index=0, analysis_config=None,
+    def __init__(self, gui, camera_source=None, analysis_config=None,
                  analysis_output_path=None, threshold_output_path=None):
         self.gui = gui
         self.display_controller = gui.display_controller
-        self.camera_index = camera_index
+        self.camera_source = camera_source or {"backend": "opencv", "index": 0}
         self.analysis_config = analysis_config
         self.analysis_output_path = analysis_output_path
         self.threshold_output_path = threshold_output_path
@@ -58,13 +59,8 @@ class LiveEngine:
         self.analysis_start_time = None  # Reset timing for new run
         self.completed_naturally = False  # Reset completion flag
         
-        # Initialize analysis state only if analyzing
-        if self.analyze and self.analysis_config:
-            crop_width = self.analysis_config.get('crop_right', 1280) - self.analysis_config.get('crop_left', 0)
-            # Ensure crop_width is valid (at least 1)
-            if crop_width <= 0:
-                crop_width = 1280  # Default to full camera width
-            self.running_stats = RunningStats(crop_width)
+        # Initialize analysis state once the real camera resolution is known in _run()
+        self.running_stats = None
         
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
@@ -80,27 +76,38 @@ class LiveEngine:
 
     def _run(self):
         """Main loop for capturing, analyzing, and displaying frames from webcam."""
-        cap = cv2.VideoCapture(self.camera_index)
+        cap = create_camera_capture(self.camera_source)
         self.cap = cap  # Store reference for quick release
-        
-        # Set camera properties for better performance
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-        cap.set(cv2.CAP_PROP_FPS, 30)
-        
-        if not cap.isOpened():
-            self.error_message = f"Could not open camera (index {self.camera_index}). Make sure a camera is connected."
+
+        unavailable_reason = self.camera_source.get("unavailable_reason")
+        if unavailable_reason:
+            self.error_message = unavailable_reason
+            self.gui.root.after(0, self._handle_camera_error)
+            self.cap = None
+            return
+
+        try:
+            opened = cap.open()
+        except Exception as exc:
+            opened = False
+            self.error_message = str(exc)
+
+        if not opened:
+            if not self.error_message:
+                camera_label = self.camera_source.get("display_name", "selected camera")
+                self.error_message = f"Could not open {camera_label}. Make sure it is connected."
             self.gui.root.after(0, self._handle_camera_error)
             self.cap = None
             return
 
         # Get actual resolution (may differ from requested)
-        actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        actual_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        print(f"DEBUG: Camera {self.camera_index} actual resolution: {actual_width}x{actual_height}")
+        actual_width = int(cap.get_width())
+        actual_height = int(cap.get_height())
+        self._normalize_default_crop(actual_width, actual_height)
+        camera_label = self.camera_source.get("display_name", "camera")
+        print(f"DEBUG: {camera_label} actual resolution: {actual_width}x{actual_height}")
 
         self.is_open = True
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Reduce buffer to get latest frames
         
         # Initialize writers if analyzing - use cropped analysis resolution
         if self.analyze:
@@ -110,17 +117,20 @@ class LiveEngine:
             crop_bottom = self.analysis_config.get('crop_bottom', actual_height)
             cropped_width = max(1, crop_right - crop_left)
             cropped_height = max(1, crop_bottom - crop_top)
+            self.running_stats = RunningStats(cropped_width)
+            frame_stride = max(1, int(self.analysis_config.get('frame_stride', 1)))
+            output_fps = max(1.0, 30.0 / frame_stride)
             try:
                 if self.analysis_output_path:
                     self.analysis_writer = create_video_writer(
                         self.analysis_output_path,
-                        30.0,
+                        output_fps,
                         (cropped_width, cropped_height)
                     )
                 if self.threshold_output_path:
                     self.threshold_writer = create_video_writer(
                         self.threshold_output_path,
-                        30.0,
+                        output_fps,
                         (cropped_width, cropped_height)
                     )
             except Exception as exc:
@@ -137,6 +147,7 @@ class LiveEngine:
                 return
         
         frame_count = 0
+        captured_frame_count = 0
         last_update_time = time.time()
         processing_time = 0
         consecutive_failures = 0
@@ -180,6 +191,15 @@ class LiveEngine:
                 # Process the frame based on mode
                 display_frame = frame.copy()
                 if self.analyze and self.analysis_config:
+                    captured_frame_count += 1
+                    frame_stride = max(1, int(self.analysis_config.get('frame_stride', 1)))
+                    should_analyze_frame = ((captured_frame_count - 1) % frame_stride) == 0
+                    if not should_analyze_frame:
+                        if self.display_controller:
+                            self.gui.root.after(0, lambda f=frame: setattr(self.gui, 'last_raw_frame', f.copy()))
+                            self.gui.root.after(0, self.display_controller.display_frame, display_frame)
+                        continue
+
                     # Full analysis mode - set start time on first analysis frame
                     if self.analysis_start_time is None:
                         self.analysis_start_time = time.time()
@@ -263,7 +283,7 @@ class LiveEngine:
         
         finally:
             # Release camera if not already released
-            if cap and cap.isOpened():
+            if cap and cap.is_opened():
                 cap.release()
             self.cap = None
             if self.analysis_writer:
@@ -321,6 +341,7 @@ class LiveEngine:
         
         # Get preview mode and display accordingly
         preview_mode = config.get('preview_mode', 'analysis')
+        show_analysis_overlay = config.get('show_analysis_overlay', True)
         
         analysis_frame = frame.copy()
         analysis_frame = draw_instantaneous_centerline(analysis_frame, centerline_array)
@@ -355,7 +376,7 @@ class LiveEngine:
         if preview_mode == 'threshold':
             display_frame = threshold_frame_bgr
         elif preview_mode == 'analysis':
-            display_frame = analysis_frame
+            display_frame = analysis_frame if show_analysis_overlay else frame.copy()
         else:
             display_frame = frame.copy()
 
@@ -404,3 +425,17 @@ class LiveEngine:
         if self.error_message:
             messagebox.showerror("Camera Error", self.error_message)
             self.gui.stop_analysis()
+
+    def _normalize_default_crop(self, actual_width, actual_height):
+        """Expand legacy live-camera defaults to the detected camera size."""
+        if not self.analysis_config or actual_width <= 0 or actual_height <= 0:
+            return
+
+        crop_left = self.analysis_config.get('crop_left', 0)
+        crop_right = self.analysis_config.get('crop_right', 1280)
+        crop_top = self.analysis_config.get('crop_top', 0)
+        crop_bottom = self.analysis_config.get('crop_bottom', 720)
+
+        if crop_left == 0 and crop_top == 0 and crop_right == 1280 and crop_bottom == 720:
+            self.analysis_config['crop_right'] = actual_width
+            self.analysis_config['crop_bottom'] = actual_height

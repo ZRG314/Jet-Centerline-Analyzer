@@ -35,6 +35,7 @@ class JetAnalysisConfig:
 
     num_frames: int
     threshold_offset: int
+    frame_stride: int
     pixels_per_col: int
     avg_line_thickness: int
     stdevs: int
@@ -334,6 +335,7 @@ def process_video(config: JetAnalysisConfig,
     start = max(0, config.start_frame)
     end = config.end_frame if config.end_frame is not None else total_frames - 1
     end = min(end, total_frames - 1)
+    frame_stride = max(1, int(getattr(config, "frame_stride", 1)))
 
     cap.set(cv2.CAP_PROP_POS_FRAMES, start)
 
@@ -351,6 +353,9 @@ def process_video(config: JetAnalysisConfig,
     fps = cap.get(cv2.CAP_PROP_FPS)
     if not fps or fps <= 0:
         fps = 30.0
+    output_fps = max(1.0, fps / frame_stride)
+
+    cap.set(cv2.CAP_PROP_POS_FRAMES, start)
 
     out_analysis = None
     out_threshold = None
@@ -358,13 +363,13 @@ def process_video(config: JetAnalysisConfig,
         if config.output_analysis_path:
             out_analysis = create_video_writer(
                 config.output_analysis_path,
-                fps,
+                output_fps,
                 (cropped_width, cropped_height)
             )
         if config.output_thresh_path:
             out_threshold = create_video_writer(
                 config.output_thresh_path,
-                fps,
+                output_fps,
                 (cropped_width, cropped_height)
             )
     except Exception:
@@ -383,7 +388,6 @@ def process_video(config: JetAnalysisConfig,
     processed = 0
 
     while frame_index <= end and processed < config.num_frames:
-
         if stop_event and stop_event.is_set():
             break
 
@@ -391,59 +395,61 @@ def process_video(config: JetAnalysisConfig,
         if not ret:
             break
 
-        frame_index += 1
-        processed += 1
+        if (frame_index - start) % frame_stride == 0:
+            processed += 1
 
-        frame = frame[
-            config.crop_top:config.crop_bottom,
-            config.crop_left:config.crop_right
-        ]
+            frame = frame[
+                config.crop_top:config.crop_bottom,
+                config.crop_left:config.crop_right
+            ]
 
-        binary, adjusted_thresh = threshold_frame(frame, config.threshold_offset)
-        threshold_history.append(adjusted_thresh)
+            binary, adjusted_thresh = threshold_frame(frame, config.threshold_offset)
+            threshold_history.append(adjusted_thresh)
 
-        centerline = extract_centerline(binary, config.pixels_per_col)
-        centerline_array = np.array(centerline, dtype=np.float64)
-        centerline_samples.append(centerline_array.copy())
+            centerline = extract_centerline(binary, config.pixels_per_col)
+            centerline_array = np.array(centerline, dtype=np.float64)
+            centerline_samples.append(centerline_array.copy())
 
-        stats.update(centerline_array)
-        running_avg, running_std = stats.get_mean_std()
+            stats.update(centerline_array)
+            running_avg, running_std = stats.get_mean_std()
 
-        # Save raw frame before drawing overlays (for threshold preview)
-        raw_frame = frame.copy()
+            # Save raw frame before drawing overlays (for threshold preview)
+            raw_frame = frame.copy()
 
-        frame = draw_instantaneous_centerline(frame, centerline_array)
+            frame = draw_instantaneous_centerline(frame, centerline_array)
 
-        if config.show_confidence:
-            frame = draw_confidence_region(
+            if config.show_confidence:
+                frame = draw_confidence_region(
+                    frame,
+                    running_avg,
+                    running_std,
+                    config.stdevs,
+                    config.confidence_mode
+                )
+
+            frame = draw_mean_centerline(
                 frame,
                 running_avg,
-                running_std,
-                config.stdevs,
-                config.confidence_mode
+                config.avg_line_thickness
             )
 
-        frame = draw_mean_centerline(
-            frame,
-            running_avg,
-            config.avg_line_thickness
-        )
+            binary_bgr = build_threshold_output_frame(
+                raw_frame,
+                binary,
+                use_multi_threshold=config.use_multi_threshold,
+                multi_threshold_offsets=config.multi_threshold_offsets,
+                multi_threshold_colors=config.multi_threshold_colors,
+            )
 
-        binary_bgr = build_threshold_output_frame(
-            raw_frame,
-            binary,
-            use_multi_threshold=config.use_multi_threshold,
-            multi_threshold_offsets=config.multi_threshold_offsets,
-            multi_threshold_colors=config.multi_threshold_colors,
-        )
+            if out_analysis:
+                out_analysis.write(frame)
+            if out_threshold:
+                out_threshold.write(binary_bgr)
 
-        if out_analysis:
-            out_analysis.write(frame)
-        if out_threshold:
-            out_threshold.write(binary_bgr)
+            if preview_callback:
+                preview_callback(processed, frame, binary_bgr, adjusted_thresh, raw_frame)
 
-        if preview_callback:
-            preview_callback(processed, frame, binary_bgr, adjusted_thresh, raw_frame)
+        frame_index += 1
 
     cap.release()
     if out_analysis:
@@ -470,6 +476,7 @@ if __name__ == "__main__":
         crop_bottom=600,
         num_frames=300,
         threshold_offset=15,
+        frame_stride=1,
         pixels_per_col=3,
         avg_line_thickness=2,
         stdevs=2,
