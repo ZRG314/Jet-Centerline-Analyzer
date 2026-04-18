@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller spec for Jet Analyzer Program.
 Build with:  pyinstaller JetAnalyzer.spec
-Output:      JetAnalyzer.exe and _internal\ in the app folder
+Output:      JetCenterlineAnalyzer.exe and JetCenterlineAnalyzer/ in the app folder
 """
 
 import os
@@ -57,7 +57,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="JetAnalyzer",
+    name="JetCenterlineAnalyzer",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -65,6 +65,7 @@ exe = EXE(
     icon=ICON_PATH,
     console=False,
     disable_windowed_traceback=False,
+    contents_directory="JetCenterlineAnalyzer",
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
@@ -78,5 +79,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="JetAnalyzer",
+    name="JetCenterlineAnalyzer",
 )
