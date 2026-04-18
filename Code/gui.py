@@ -4131,6 +4131,20 @@ class JetAnalysisGUI:
         self.reset_advanced_tab()
 
 if __name__ == "__main__":
+    # Work around Tcl/Tk 9.0 crash on macOS when launched as a .app bundle.
+    # The crash occurs in Tk_CreateConsoleWindow -> NSMenuItem initWithTitle
+    # because the app name resolves to nil during menu bar initialization.
+    if platform.system() == "Darwin":
+        # Suppress Tk console window creation (crashes with Tcl/Tk 9.0 in bundles)
+        os.environ.setdefault("TK_CONSOLE", "0")
+        # Ensure the process has a name for the macOS menu bar
+        try:
+            from ctypes import cdll, c_char_p
+            libc = cdll.LoadLibrary("libc.dylib")
+            libc.setprogname(c_char_p(b"Jet Centerline Analyzer"))
+        except Exception:
+            pass
+
     root = ctk.CTk()
     app = JetAnalysisGUI(root)
     root.mainloop()
