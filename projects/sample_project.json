@@ -2,7 +2,7 @@
   "project_version": 1,
   "saved_at": "2026-02-24T14:59:26",
   "video_path": "..\\Example Videos\\example_input.mp4",
-  "output_dir": "..\\Example Videos",
+  "output_dir": "..\\Output Files",
   "output_name": "analysis_output",
   "threshold_offset": "15",
   "pixels_per_col": "3",

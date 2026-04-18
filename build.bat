@@ -14,13 +14,17 @@ set "LEGACY_EXE_PATH=%ROOT%\JetAnalyzer.exe"
 set "LEGACY_INTERNAL_DIR=%ROOT%\_internal"
 set "SUPPORT_DIR=%ROOT%\JetCenterlineAnalyzer"
 set "EXAMPLE_VIDEOS_DIR=%ROOT%\Example Videos"
+set "EXAMPLE_VIDEO_FILE=%ROOT%\Example Videos\example_input.mp4"
 set "PROJECTS_DIR=%ROOT%\projects"
+set "STARTUP_PROJECT_FILE=%ROOT%\projects\sample_project.json"
+set "DEFAULT_PROJECT_SETTINGS_FILE=%ROOT%\projects\app_defaults.json"
 set "OUTPUT_DIR=%ROOT%\Output Files"
 set "APP_SETTINGS_PATH=%ROOT%\app_settings.json"
 set "PYI_WORK=%ROOT%\build\pyinstaller"
 set "DIST_ROOT=%ROOT%\dist"
 set "DIST_APP=%DIST_ROOT%\JetCenterlineAnalyzer"
 set "DIST_SUPPORT=%DIST_APP%\JetCenterlineAnalyzer"
+set "RELEASE_STAGE=%DIST_ROOT%\release_stage"
 set "RELEASE_ZIP=%DIST_ROOT%\JetCenterlineAnalyzer-Windows.zip"
 
 echo [1/6] Closing any running JetCenterlineAnalyzer instance...
@@ -87,8 +91,21 @@ if not exist "%ROOT%\app_settings.json" (
 )
 
 echo [7/7] Creating release zip...
+mkdir "%RELEASE_STAGE%" >nul 2>&1
+mkdir "%RELEASE_STAGE%\Example Videos" >nul 2>&1
+mkdir "%RELEASE_STAGE%\projects" >nul 2>&1
+mkdir "%RELEASE_STAGE%\Output Files" >nul 2>&1
+
+copy /Y "%EXE_PATH%" "%RELEASE_STAGE%\JetCenterlineAnalyzer.exe" >nul
+xcopy /Y /I /E "%SUPPORT_DIR%\*" "%RELEASE_STAGE%\JetCenterlineAnalyzer\" >nul
+copy /Y "%APP_SETTINGS_PATH%" "%RELEASE_STAGE%\app_settings.json" >nul
+copy /Y "%EXAMPLE_VIDEO_FILE%" "%RELEASE_STAGE%\Example Videos\example_input.mp4" >nul
+copy /Y "%STARTUP_PROJECT_FILE%" "%RELEASE_STAGE%\projects\sample_project.json" >nul
+copy /Y "%DEFAULT_PROJECT_SETTINGS_FILE%" "%RELEASE_STAGE%\projects\app_defaults.json" >nul
+xcopy /Y /I /E "%OUTPUT_DIR%\*" "%RELEASE_STAGE%\Output Files\" >nul
+
 powershell -NoProfile -Command ^
-  "Compress-Archive -Path '%EXE_PATH%', '%SUPPORT_DIR%', '%APP_SETTINGS_PATH%', '%EXAMPLE_VIDEOS_DIR%', '%PROJECTS_DIR%', '%OUTPUT_DIR%' -DestinationPath '%RELEASE_ZIP%' -Force"
+  "Set-Location '%RELEASE_STAGE%'; Compress-Archive -Path * -DestinationPath '%RELEASE_ZIP%' -Force"
 if errorlevel 1 (
     echo Failed to create release zip at "%RELEASE_ZIP%".
     pause
@@ -102,8 +119,9 @@ echo Executable:     %EXE_PATH%
 echo.
 echo Runtime files next to the executable:
 echo   JetCenterlineAnalyzer\
-echo   Example Videos\
-echo   projects\
+echo   Example Videos\example_input.mp4
+echo   projects\sample_project.json
+echo   projects\app_defaults.json
 echo   Output Files\
 echo   app_settings.json
 echo.

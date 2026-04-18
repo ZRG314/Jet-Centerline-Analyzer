@@ -11,6 +11,11 @@ build/
 dist/
 *.egg-info/
 
+JetCenterlineAnalyzer/
+JetCenterlineAnalyzer.exe
+JetAnalyzer.exe
+_internal/
+
 results/
 Input Videos/
 Example Videos/
