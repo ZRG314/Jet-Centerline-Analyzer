@@ -104,8 +104,6 @@ class LiveEngine:
         actual_width = int(cap.get_width())
         actual_height = int(cap.get_height())
         self._normalize_default_crop(actual_width, actual_height)
-        camera_label = self.camera_source.get("display_name", "camera")
-        print(f"DEBUG: {camera_label} actual resolution: {actual_width}x{actual_height}")
 
         self.is_open = True
         
@@ -249,7 +247,6 @@ class LiveEngine:
                     
                     # Check if max frames reached
                     if max_frames and self.frame_count >= max_frames:
-                        print(f"DEBUG: Reached max frames ({max_frames}), stopping analysis")
                         self.completed_naturally = True
                         break
                 
@@ -295,10 +292,6 @@ class LiveEngine:
             # Store final profiles if analyzing
             if self.running_stats:
                 self.final_mean, self.final_std = self.running_stats.get_mean_std()
-                has_valid_mean = np.any(np.isfinite(self.final_mean)) if self.final_mean is not None else False
-                print(f"DEBUG LiveEngine._run(): Final mean shape: {self.final_mean.shape if self.final_mean is not None else 'None'}, has valid data: {has_valid_mean}, frame_count: {self.frame_count}")
-            else:
-                print(f"DEBUG LiveEngine._run(): running_stats is None, no profiles saved")
             
             # Notify GUI if completed naturally
             if self.completed_naturally:
@@ -307,10 +300,6 @@ class LiveEngine:
     def _process_frame(self, frame):
         """Apply jet analysis to the frame."""
         config = self.analysis_config
-        
-        # Debug: First frame processed
-        if self.frame_count == 1:
-            print(f"DEBUG _process_frame: First frame! running_stats is None: {self.running_stats is None}")
         
         # Apply crop
         crop_left = config.get('crop_left', 0)
@@ -333,10 +322,7 @@ class LiveEngine:
         if self.running_stats:
             self.running_stats.update(centerline_array)
             running_avg, running_std = self.running_stats.get_mean_std()
-            if self.frame_count <= 2:
-                print(f"DEBUG: Frame {self.frame_count} - Updated running_stats, centerline shape: {centerline_array.shape}")
         else:
-            print(f"DEBUG: Frame {self.frame_count} - running_stats is None!")
             running_avg, running_std = centerline_array, np.full_like(centerline_array, np.nan)
         
         # Get preview mode and display accordingly

@@ -187,29 +187,36 @@ class DisplayController:
 
     def update_post_analysis_preview(self):
         app = self.app
-        if app.last_analysis_frame is None:
-            return
-        if app.preview_mode.get() == "analysis":
-            if app.show_analysis_overlay_var.get():
+        preview_mode = app.preview_mode.get()
+
+        if preview_mode == "analysis":
+            if app.show_analysis_overlay_var.get() and app.last_analysis_frame is not None:
                 app.display_frame(app.last_analysis_frame)
-            elif app.last_raw_analysis_frame is not None:
+                return
+            if app.last_raw_analysis_frame is not None:
                 app.display_frame(app.last_raw_analysis_frame)
-            else:
+                return
+            if app.original_crop_frame is not None:
+                app.display_frame(app.prepare_preview_frame(app.original_crop_frame.copy()))
+                return
+            if app.last_analysis_frame is not None:
                 app.display_frame(app.last_analysis_frame)
-        elif app.preview_mode.get() == "threshold":
-            # Regenerate multi-threshold colored preview if enabled
-            if app.use_multi_threshold_var.get():
-                import cv2
-                from analysis_engine import compute_multi_thresholds, build_threshold_color_preview_filtered
-                offsets = app.get_multi_threshold_offsets()
-                colors = app.get_multi_threshold_colors()
-                # Always use last_raw_analysis_frame (no overlays) for clean threshold preview
-                source_frame = getattr(app, 'last_raw_analysis_frame', None)
-                if source_frame is None:
-                    source_frame = app.last_analysis_frame
-                if source_frame is not None:
-                    frame_to_preview = source_frame.copy()
-                    gray = cv2.cvtColor(frame_to_preview, cv2.COLOR_BGR2GRAY) if frame_to_preview.ndim == 3 else frame_to_preview
+                return
+            return
+
+        if preview_mode == "threshold":
+            source_frame = getattr(app, "last_raw_analysis_frame", None)
+            if source_frame is None and app.original_crop_frame is not None:
+                source_frame = app.apply_saved_crop_to_frame(app.original_crop_frame.copy())
+            if source_frame is None:
+                source_frame = app.last_analysis_frame
+
+            if source_frame is not None:
+                if app.use_multi_threshold_var.get():
+                    from analysis_engine import compute_multi_thresholds, build_threshold_color_preview_filtered
+                    offsets = app.get_multi_threshold_offsets()
+                    colors = app.get_multi_threshold_colors()
+                    gray = cv2.cvtColor(source_frame, cv2.COLOR_BGR2GRAY) if source_frame.ndim == 3 else source_frame
                     thresholds, _ = compute_multi_thresholds(gray, offsets)
                     region_count = len(thresholds) + 1
                     preview_colors = colors[:region_count] if len(colors) >= region_count else colors + ["#000000"] * (region_count - len(colors))
@@ -217,6 +224,12 @@ class DisplayController:
                     app.last_threshold_frame = threshold_frame_img
                     app.display_frame(threshold_frame_img)
                     return
-            # Fall back to standard binary threshold frame
+                from analysis_engine import threshold_frame
+                binary, _ = threshold_frame(source_frame, app.threshold_offset_var.get())
+                threshold_frame_img = cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
+                app.last_threshold_frame = threshold_frame_img
+                app.display_frame(threshold_frame_img)
+                return
+
             if app.last_threshold_frame is not None:
                 app.display_frame(app.last_threshold_frame)

@@ -12,6 +12,9 @@ import shutil
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk, colorchooser
 import threading
+
+os.environ.setdefault("OPENCV_LOG_LEVEL", "SILENT")
+
 try:
     import cv2  # type: ignore
 except ModuleNotFoundError as exc:
@@ -27,6 +30,14 @@ except ModuleNotFoundError as exc:
         "Or run `run_gui.ps1` (from the project root), or `..\\run_gui.ps1` (from Code/).\n"
         f"\nPython executable: {sys.executable}"
     ) from exc
+
+try:
+    cv2.setLogLevel(0)
+except Exception:
+    try:
+        cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_SILENT)
+    except Exception:
+        pass
 
 try:
     import numpy as np  # type: ignore
@@ -1754,15 +1765,11 @@ class JetAnalysisGUI:
             
             # Can edit crop settings for video files or when in live camera mode
             if not self.is_running:
-                if has_video_file and not self.crop_mode:
-                    self.enable_crop_mode()
-                elif has_video_file and self.crop_mode:
-                    self.save_crop_button.configure(state="normal")
-                elif source == "Live Camera" and self.live_preview_active and not self.crop_mode:
-                    # For live camera with preview active, enable crop mode with current frame
+                if source == "Live Camera" and self.live_preview_active:
+                    # Always refresh Crop with a raw camera frame rather than a threshold preview.
                     self.enable_live_crop_mode()
-                elif source == "Live Camera" and self.crop_mode:
-                    self.save_crop_button.configure(state="normal")
+                elif has_video_file:
+                    self.enable_crop_mode()
         else:
             self.drag_start = None
             self.resize_corner = None
@@ -2317,7 +2324,7 @@ class JetAnalysisGUI:
         if not ret:
             return
 
-        self._setup_crop_mode(frame, reset_box)
+        self._setup_crop_mode(frame, reset_box=reset_box)
 
     def enable_live_crop_mode(self, reset_box=False):
         """Enable crop mode for live camera using the current preview frame."""
@@ -2325,15 +2332,13 @@ class JetAnalysisGUI:
             return
         
         frame = None
-        # Use the currently displayed frame so Crop tab matches the selected preview mode.
-        if reset_box and self.last_raw_frame is not None:
+        # Crop editing should always use the raw camera frame, not a threshold preview.
+        if self.last_raw_frame is not None:
             frame = self.last_raw_frame.copy()
-        elif reset_box and self.original_crop_frame is not None:
+        elif self.original_crop_frame is not None:
             frame = self.original_crop_frame.copy()
         elif self.last_display_frame is not None:
             frame = self.last_display_frame.copy()
-        elif self.last_raw_frame is not None:
-            frame = self.last_raw_frame.copy()
         
         if frame is None:
             return
@@ -2751,7 +2756,6 @@ class JetAnalysisGUI:
         elif source == "Live Camera":
             # Stop any existing preview/analysis without waiting
             if self.live_engine:
-                print(f"DEBUG start_thread: Stopping existing live_engine")
                 self.live_engine.stop()
                 self.live_engine = None
             
@@ -2848,7 +2852,6 @@ class JetAnalysisGUI:
         """Called by LiveEngine when analysis completes naturally (e.g., frame limit reached)."""
         if self.live_engine and self.live_engine.running_stats:
             self.final_mean_profile, self.final_std_profile = self.live_engine.running_stats.get_mean_std()
-            print(f"DEBUG on_live_analysis_complete: Captured profiles - mean is None: {self.final_mean_profile is None}")
         self.final_centerline_samples = None
         self.live_engine = None
         self.analysis_was_stopped = False  # Completed normally, not stopped
@@ -2866,12 +2869,7 @@ class JetAnalysisGUI:
                 # Get whatever profiles we have so far without waiting
                 if self.live_engine.running_stats:
                     self.final_mean_profile, self.final_std_profile = self.live_engine.running_stats.get_mean_std()
-                    print(f"DEBUG stop_analysis: Captured profiles from running_stats - mean is None: {self.final_mean_profile is None}")
-                    if self.final_mean_profile is not None:
-                        has_valid = np.any(np.isfinite(self.final_mean_profile))
-                        print(f"DEBUG stop_analysis: Mean shape {self.final_mean_profile.shape}, has finite values: {has_valid}")
                 else:
-                    print(f"DEBUG stop_analysis: running_stats is None!")
                     self.final_mean_profile = None
                     self.final_std_profile = None
                 self.final_centerline_samples = None
@@ -2914,12 +2912,8 @@ class JetAnalysisGUI:
         if source == "Live Camera":
             # For live camera, redraw graph with captured data
             has_valid_profile = self.final_mean_profile is not None and np.any(np.isfinite(self.final_mean_profile))
-            print(f"DEBUG reset_state: Live Camera - has_valid_profile={has_valid_profile}, mean is None={self.final_mean_profile is None}")
             if has_valid_profile:
-                print(f"DEBUG reset_state: Redrawing graph with profile of length {len(self.final_mean_profile)}")
                 self.redraw_graph()
-            else:
-                print(f"DEBUG reset_state: No valid profile data to display")
             
             if self.analysis_error is not None:
                 self.set_status("Error", "error")
@@ -3179,8 +3173,7 @@ class JetAnalysisGUI:
             config['multi_threshold_offsets'] = offsets
             config['multi_threshold_weights'] = weights
             config['multi_threshold_colors'] = colors
-            # Force preview mode to threshold so live engine displays colored preview
-            config['preview_mode'] = 'threshold'
+            config['preview_mode'] = self.preview_mode.get()
 
         if self.is_running and self.current_analysis_config:
             self.current_analysis_config.threshold_offset = self.threshold_offset_var.get()
@@ -3214,7 +3207,7 @@ class JetAnalysisGUI:
                     binary, _ = threshold_frame(frame_to_preview, threshold_offset)
                     threshold_frame_img = cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
                 self.last_threshold_frame = threshold_frame_img
-                self.display_frame(threshold_frame_img)
+                self.update_post_analysis_preview()
 
     def on_preview_mode_changed(self):
         """Handle preview mode changes for both live and static previews."""

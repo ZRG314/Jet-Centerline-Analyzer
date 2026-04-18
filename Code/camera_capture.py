@@ -1,8 +1,11 @@
 """Camera discovery and capture helpers for OpenCV and FLIR/Teledyne cameras."""
 
+import contextlib
 import json
+import os
 import platform
 import subprocess
+import tempfile
 
 import cv2
 
@@ -12,6 +15,26 @@ WINDOWS_CAMERA_CLASS_GUIDS = {
     "{6bdd1fc6-810f-11d0-bec7-08002be2092f}",  # Image devices
     "{ca3e7ab9-b4c3-4ae6-8251-579ef933890f}",  # Camera devices
 }
+
+
+@contextlib.contextmanager
+def _suppress_native_stderr():
+    """Temporarily suppress native stderr output from noisy camera probes."""
+    stderr_fd = None
+    saved_stderr_fd = None
+    sink = None
+    try:
+        stderr_fd = sys_stderr_fd = 2
+        saved_stderr_fd = os.dup(sys_stderr_fd)
+        sink = tempfile.TemporaryFile()
+        os.dup2(sink.fileno(), sys_stderr_fd)
+        yield
+    finally:
+        if saved_stderr_fd is not None:
+            os.dup2(saved_stderr_fd, stderr_fd)
+            os.close(saved_stderr_fd)
+        if sink is not None:
+            sink.close()
 
 
 def _safe_label(base_label, backend, used_labels):
@@ -191,21 +214,24 @@ def list_available_cameras(max_opencv_indices=DEFAULT_OPENCV_CAMERA_COUNT):
     for idx in range(max_opencv_indices):
         cap = None
         try:
-            cap = cv2.VideoCapture(idx)
-            if cap.isOpened():
-                ret, _ = cap.read()
-                if ret:
-                    device_name = ""
-                    if opencv_name_index < len(windows_camera_names):
-                        device_name = windows_camera_names[opencv_name_index]
-                    base_label = f"{device_name} (Camera {idx})" if device_name else f"Camera {idx}"
-                    descriptors.append({
-                        "id": f"opencv:{idx}",
-                        "backend": "opencv",
-                        "display_name": _safe_label(base_label, "OpenCV", used_labels),
-                        "index": idx,
-                    })
-                    opencv_name_index += 1
+            with _suppress_native_stderr():
+                cap = cv2.VideoCapture(idx)
+                is_open = cap.isOpened()
+                ret = False
+                if is_open:
+                    ret, _ = cap.read()
+            if is_open and ret:
+                device_name = ""
+                if opencv_name_index < len(windows_camera_names):
+                    device_name = windows_camera_names[opencv_name_index]
+                base_label = f"{device_name} (Camera {idx})" if device_name else f"Camera {idx}"
+                descriptors.append({
+                    "id": f"opencv:{idx}",
+                    "backend": "opencv",
+                    "display_name": _safe_label(base_label, "OpenCV", used_labels),
+                    "index": idx,
+                })
+                opencv_name_index += 1
         except Exception:
             pass
         finally:
