@@ -40,6 +40,21 @@ _macos_icon_png = os.path.join(ROOT, "icon_macos.png")
 if os.path.isfile(_macos_icon_png):
     datas.append((_macos_icon_png, "."))
 
+# Include example video if it exists
+_example_video = os.path.join(ROOT, "Example Videos", "example_input.mp4")
+if os.path.isfile(_example_video):
+    datas.append((_example_video, "Example Videos"))
+
+# Include app settings and project files
+_app_settings = os.path.join(ROOT, "app_settings.json")
+if os.path.isfile(_app_settings):
+    datas.append((_app_settings, "."))
+_projects_dir = os.path.join(ROOT, "projects")
+if os.path.isdir(_projects_dir):
+    for _pf in os.listdir(_projects_dir):
+        if _pf.endswith(".json"):
+            datas.append((os.path.join(_projects_dir, _pf), "projects"))
+
 # Hidden imports — shared across platforms
 hiddenimports = [
     "customtkinter",

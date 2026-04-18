@@ -284,18 +284,21 @@ class ProjectStateController:
         if app.is_running:
             return
         if getattr(sys, "frozen", False):
-            base_dir = os.path.dirname(sys.executable)
+            # On macOS .app bundles, data files are in Contents/Resources/
+            # (sys._MEIPASS), not next to the executable (Contents/MacOS/).
+            search_dirs = [sys._MEIPASS, os.path.dirname(sys.executable)]
         else:
-            base_dir = os.path.dirname(__file__)
-        for filename in self.startup_project_filenames:
-            file_path = os.path.normpath(os.path.join(base_dir, filename))
-            if not os.path.isfile(file_path):
-                continue
-            try:
-                with open(file_path, "r", encoding="utf-8") as handle:
-                    state = json.load(handle)
-                self.apply_project_state(state, project_file_path=file_path, silent=True)
-                app.project_path = file_path
-                return
-            except (OSError, json.JSONDecodeError, ValueError):
-                return
+            search_dirs = [os.path.dirname(__file__)]
+        for base_dir in search_dirs:
+            for filename in self.startup_project_filenames:
+                file_path = os.path.normpath(os.path.join(base_dir, filename))
+                if not os.path.isfile(file_path):
+                    continue
+                try:
+                    with open(file_path, "r", encoding="utf-8") as handle:
+                        state = json.load(handle)
+                    self.apply_project_state(state, project_file_path=file_path, silent=True)
+                    app.project_path = file_path
+                    return
+                except (OSError, json.JSONDecodeError, ValueError):
+                    return

@@ -224,6 +224,14 @@ def _get_resource_dir():
 
 
 def get_app_settings_path():
+    """Return the path to the writable app settings file.
+
+    On macOS .app bundles the executable lives inside Contents/MacOS/ which
+    is not a good place for user settings.  Use the user data directory instead
+    and seed it from the bundled defaults on first run.
+    """
+    if platform.system() != "Windows" and getattr(sys, "frozen", False):
+        return os.path.join(_get_user_data_dir(), APP_SETTINGS_FILENAME)
     return os.path.join(_get_app_dir(), APP_SETTINGS_FILENAME)
 
 
@@ -344,17 +352,27 @@ def normalize_app_defaults(saved_defaults):
 
 def load_app_defaults():
     settings_path = get_app_settings_path()
-    if not os.path.isfile(settings_path):
-        return copy.deepcopy(DEFAULTS)
-    try:
-        with open(settings_path, "r", encoding="utf-8") as handle:
-            data = json.load(handle)
-        normalized = normalize_app_defaults(data)
-        for key in ("output_dir", "analysis_output_path", "threshold_output_path"):
-            normalized[key] = _resolve_app_path(normalized.get(key, ""))
-        return normalized
-    except (OSError, json.JSONDecodeError, TypeError, ValueError):
-        return copy.deepcopy(DEFAULTS)
+
+    # On first run of a macOS/Linux .app bundle, the user data dir won't have
+    # settings yet.  Fall back to the bundled defaults inside the resource dir.
+    candidates = [settings_path]
+    if getattr(sys, "frozen", False):
+        candidates.append(os.path.join(_get_resource_dir(), APP_SETTINGS_FILENAME))
+
+    for path in candidates:
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            normalized = normalize_app_defaults(data)
+            for key in ("output_dir", "analysis_output_path", "threshold_output_path"):
+                normalized[key] = _resolve_app_path(normalized.get(key, ""))
+            return normalized
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            continue
+
+    return copy.deepcopy(DEFAULTS)
 
 
 def save_app_defaults(defaults_dict):
@@ -597,10 +615,13 @@ class JetAnalysisGUI:
         self.refresh_run_state()
         _ensure_user_dirs()
         base_dir = os.path.dirname(__file__)
+        res_dir = _get_resource_dir()
         input_dir = _get_input_videos_dir()
         default_video_candidates = [
             # User data directory (~/Documents/JetCenterlineAnalyzer/Input Videos/)
             os.path.join(input_dir, "example_input.mp4"),
+            # Bundled resource directory (inside .app on macOS)
+            os.path.join(res_dir, "Example Videos", "example_input.mp4"),
             # Legacy paths (next to the app / source)
             os.path.join(base_dir, "..", "Example Videos", "example_input.mp4"),
             os.path.join(base_dir, "Example Videos", "example_input.mp4"),
