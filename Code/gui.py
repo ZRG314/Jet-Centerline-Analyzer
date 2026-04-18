@@ -12,8 +12,37 @@ import shutil
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk, colorchooser
 import threading
-import cv2
-import numpy as np
+try:
+    import cv2  # type: ignore
+except ModuleNotFoundError as exc:
+    if getattr(exc, "name", None) != "cv2":
+        raise
+    raise ModuleNotFoundError(
+        "OpenCV (cv2) is required to run JetAnalyzer from source.\n"
+        "\n"
+        "Install dependencies:\n"
+        "  - From the project root: `python -m pip install -r requirements.txt`\n"
+        "  - From the Code folder:  `python -m pip install -r ..\\requirements.txt`\n"
+        "\n"
+        "Or run `run_gui.ps1` (from the project root), or `..\\run_gui.ps1` (from Code/).\n"
+        f"\nPython executable: {sys.executable}"
+    ) from exc
+
+try:
+    import numpy as np  # type: ignore
+except ModuleNotFoundError as exc:
+    if getattr(exc, "name", None) != "numpy":
+        raise
+    raise ModuleNotFoundError(
+        "numpy is required to run JetAnalyzer from source.\n"
+        "\n"
+        "Install dependencies:\n"
+        "  - From the project root: `python -m pip install -r requirements.txt`\n"
+        "  - From the Code folder:  `python -m pip install -r ..\\requirements.txt`\n"
+        "\n"
+        "Or run `run_gui.ps1` (from the project root), or `..\\run_gui.ps1` (from Code/).\n"
+        f"\nPython executable: {sys.executable}"
+    ) from exc
 try:
     import customtkinter as ctk
 except ModuleNotFoundError as exc:
