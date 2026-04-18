@@ -4,7 +4,7 @@ setlocal
 :: -------------------------------------------------------
 :: Jet Analyzer Program - Windows build script
 :: Run this file from any directory; it handles all paths.
-:: Output: JetCenterlineAnalyzer.exe and JetCenterlineAnalyzer\ in the project root
+:: Output: JetCenterlineAnalyzer.exe, support folders, and a release zip
 :: -------------------------------------------------------
 
 cd /d "%~dp0"
@@ -13,10 +13,15 @@ set "EXE_PATH=%ROOT%\JetCenterlineAnalyzer.exe"
 set "LEGACY_EXE_PATH=%ROOT%\JetAnalyzer.exe"
 set "LEGACY_INTERNAL_DIR=%ROOT%\_internal"
 set "SUPPORT_DIR=%ROOT%\JetCenterlineAnalyzer"
+set "EXAMPLE_VIDEOS_DIR=%ROOT%\Example Videos"
+set "PROJECTS_DIR=%ROOT%\projects"
+set "OUTPUT_DIR=%ROOT%\Output Files"
+set "APP_SETTINGS_PATH=%ROOT%\app_settings.json"
 set "PYI_WORK=%ROOT%\build\pyinstaller"
 set "DIST_ROOT=%ROOT%\dist"
 set "DIST_APP=%DIST_ROOT%\JetCenterlineAnalyzer"
 set "DIST_SUPPORT=%DIST_APP%\JetCenterlineAnalyzer"
+set "RELEASE_ZIP=%DIST_ROOT%\JetCenterlineAnalyzer-Windows.zip"
 
 echo [1/6] Closing any running JetCenterlineAnalyzer instance...
 taskkill /F /IM JetCenterlineAnalyzer.exe >nul 2>&1
@@ -81,6 +86,15 @@ if not exist "%ROOT%\app_settings.json" (
     echo   Copied app_settings.json
 )
 
+echo [7/7] Creating release zip...
+powershell -NoProfile -Command ^
+  "Compress-Archive -Path '%EXE_PATH%', '%SUPPORT_DIR%', '%APP_SETTINGS_PATH%', '%EXAMPLE_VIDEOS_DIR%', '%PROJECTS_DIR%', '%OUTPUT_DIR%' -DestinationPath '%RELEASE_ZIP%' -Force"
+if errorlevel 1 (
+    echo Failed to create release zip at "%RELEASE_ZIP%".
+    pause
+    exit /b 1
+)
+
 echo Done.
 echo.
 echo Output folder:  %ROOT%
@@ -88,6 +102,13 @@ echo Executable:     %EXE_PATH%
 echo.
 echo Runtime files next to the executable:
 echo   JetCenterlineAnalyzer\
+echo   Example Videos\
+echo   projects\
+echo   Output Files\
+echo   app_settings.json
+echo.
+echo Release zip:
+echo   %RELEASE_ZIP%
 echo.
 echo App data is resolved relative to the current folder:
 echo   projects\
