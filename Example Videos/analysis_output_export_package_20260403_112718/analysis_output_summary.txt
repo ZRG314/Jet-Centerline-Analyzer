@@ -1,0 +1,26 @@
+Jet Analyzer Export Package
+Created: 2026-04-03 11:27:20
+Package directory: C:\Users\zrg31\OneDrive - Cedarville University\Cedarville\Classes\7 - Fall 2025\Senior Design\Jet Analyzer Program - Copy\Example Videos\analysis_output_export_package_20260403_112718
+
+Source
+Mode: Video File
+Input: C:\Users\zrg31\OneDrive - Cedarville University\Cedarville\Classes\7 - Fall 2025\Senior Design\Jet Analyzer Program - Copy\Example Videos\example_input.mp4
+
+Run settings
+Frame range: 0 to 200
+Analyze every: 1 frame(s)
+Crop: left=0, top=0, right=886, bottom=611 (886 x 611 px)
+Preview mode: analysis
+Threshold offset: 15
+Pixels per column: 3
+Standard deviations: 2
+Graph view: Histogram
+Graph units: mm
+Calibration: Calibration loaded: 0.258134 mm/px
+Nozzle origin: Nozzle origin set: x=245.5px, y=690.9px
+
+Included files
+Graph image: analysis_output_graph.png
+Graph data: analysis_output_graph_data.csv
+Project settings: analysis_output_project.json
+Summary: analysis_output_summary.txt
