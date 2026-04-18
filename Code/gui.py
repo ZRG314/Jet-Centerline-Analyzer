@@ -5,6 +5,7 @@ Owns shared app state and delegates focused behavior to controller modules.
 
 import os
 import sys
+import platform
 import json
 import time
 import copy
@@ -12,6 +13,30 @@ import shutil
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk, colorchooser
 import threading
+
+
+# ---------------------------------------------------------------------------
+# Cross-platform font helper
+# ---------------------------------------------------------------------------
+def _system_font(weight="normal"):
+    """Return a platform-appropriate UI font family name.
+
+    *weight* should be ``"normal"`` or ``"bold"`` (maps to the semibold
+    variant on Windows).
+    """
+    _sys = platform.system()
+    if _sys == "Darwin":
+        # San Francisco is the macOS system font; Tk resolves it via the
+        # "system" font family, but explicit names work from macOS 10.11+.
+        return "SF Pro" if weight == "normal" else "SF Pro Semibold"
+    if _sys == "Windows":
+        return "Segoe UI" if weight == "normal" else "Segoe UI Semibold"
+    # Linux / other — DejaVu Sans ships with most distros and Tk.
+    return "DejaVu Sans" if weight == "normal" else "DejaVu Sans Bold"
+
+
+UI_FONT = _system_font("normal")
+UI_FONT_BOLD = _system_font("bold")
 
 os.environ.setdefault("OPENCV_LOG_LEVEL", "SILENT")
 
@@ -159,6 +184,38 @@ def _get_app_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def _get_user_data_dir():
+    """Return the platform-appropriate user data directory for the app.
+
+    macOS:   ~/Documents/JetCenterlineAnalyzer/
+    Linux:   ~/JetCenterlineAnalyzer/
+    Windows: next to the executable (unchanged legacy behavior)
+    """
+    _sys = platform.system()
+    if _sys == "Darwin":
+        return os.path.join(os.path.expanduser("~"), "Documents", "JetCenterlineAnalyzer")
+    if _sys == "Linux":
+        return os.path.join(os.path.expanduser("~"), "JetCenterlineAnalyzer")
+    # Windows — keep existing behavior (app dir)
+    return _get_app_dir()
+
+
+def _get_input_videos_dir():
+    """Return the directory where users should place input video files."""
+    return os.path.join(_get_user_data_dir(), "Input Videos")
+
+
+def _get_output_dir():
+    """Return the default output directory for analysis results."""
+    return os.path.join(_get_user_data_dir(), "Output Files")
+
+
+def _ensure_user_dirs():
+    """Create the user data directories if they don't exist."""
+    for d in (_get_user_data_dir(), _get_input_videos_dir(), _get_output_dir()):
+        os.makedirs(d, exist_ok=True)
+
+
 def _get_resource_dir():
     """Return the read-only resource directory (unpacked _internal/ when frozen, else Code/ dir)."""
     if getattr(sys, "frozen", False):
@@ -167,6 +224,14 @@ def _get_resource_dir():
 
 
 def get_app_settings_path():
+    """Return the path to the writable app settings file.
+
+    On macOS .app bundles the executable lives inside Contents/MacOS/ which
+    is not a good place for user settings.  Use the user data directory instead
+    and seed it from the bundled defaults on first run.
+    """
+    if platform.system() != "Windows" and getattr(sys, "frozen", False):
+        return os.path.join(_get_user_data_dir(), APP_SETTINGS_FILENAME)
     return os.path.join(_get_app_dir(), APP_SETTINGS_FILENAME)
 
 
@@ -189,6 +254,9 @@ def _resolve_app_path(path_value):
     path_text = str(path_value or "").strip()
     if not path_text:
         return ""
+
+    # Normalize Windows backslash separators for cross-platform compatibility.
+    path_text = path_text.replace("\\", "/")
 
     normalized = os.path.normpath(path_text)
     if os.path.isabs(normalized):
@@ -284,17 +352,27 @@ def normalize_app_defaults(saved_defaults):
 
 def load_app_defaults():
     settings_path = get_app_settings_path()
-    if not os.path.isfile(settings_path):
-        return copy.deepcopy(DEFAULTS)
-    try:
-        with open(settings_path, "r", encoding="utf-8") as handle:
-            data = json.load(handle)
-        normalized = normalize_app_defaults(data)
-        for key in ("output_dir", "analysis_output_path", "threshold_output_path"):
-            normalized[key] = _resolve_app_path(normalized.get(key, ""))
-        return normalized
-    except (OSError, json.JSONDecodeError, TypeError, ValueError):
-        return copy.deepcopy(DEFAULTS)
+
+    # On first run of a macOS/Linux .app bundle, the user data dir won't have
+    # settings yet.  Fall back to the bundled defaults inside the resource dir.
+    candidates = [settings_path]
+    if getattr(sys, "frozen", False):
+        candidates.append(os.path.join(_get_resource_dir(), APP_SETTINGS_FILENAME))
+
+    for path in candidates:
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            normalized = normalize_app_defaults(data)
+            for key in ("output_dir", "analysis_output_path", "threshold_output_path"):
+                normalized[key] = _resolve_app_path(normalized.get(key, ""))
+            return normalized
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            continue
+
+    return copy.deepcopy(DEFAULTS)
 
 
 def save_app_defaults(defaults_dict):
@@ -382,7 +460,9 @@ class JetAnalysisGUI:
         self.saved_video_session = None
         self.camera_index_var = tk.StringVar(value="0")
         self.available_cameras = {}
-        self.output_dir = tk.StringVar(value=self.app_defaults["output_dir"])
+        self.output_dir = tk.StringVar(
+            value=self.app_defaults["output_dir"] or _get_output_dir()
+        )
         self.save_analysis_output_var = tk.BooleanVar(value=self.app_defaults["save_analysis_output"])
         self.save_threshold_output_var = tk.BooleanVar(value=self.app_defaults["save_threshold_output"])
         self.analysis_output_format_var = tk.StringVar(value=self.app_defaults["analysis_output_format"])
@@ -513,12 +593,7 @@ class JetAnalysisGUI:
         self.doc_window = None
         self.doc_text_widget = None
         self.doc_path = os.path.join(_get_resource_dir(), DEFAULT_DOC_FILENAME)
-        _icon_path = os.path.join(_get_resource_dir(), "icon.ico")
-        if os.path.isfile(_icon_path):
-            try:
-                self.root.iconbitmap(_icon_path)
-            except Exception:
-                pass
+        self._set_app_icon()
         self.project_path = ""
         self._tooltips = []
         self.status_var = tk.StringVar(value="Needs Input")
@@ -538,8 +613,16 @@ class JetAnalysisGUI:
         self.bind_keyboard_shortcuts()
         self.set_range_controls_enabled(True)
         self.refresh_run_state()
+        _ensure_user_dirs()
         base_dir = os.path.dirname(__file__)
+        res_dir = _get_resource_dir()
+        input_dir = _get_input_videos_dir()
         default_video_candidates = [
+            # User data directory (~/Documents/JetCenterlineAnalyzer/Input Videos/)
+            os.path.join(input_dir, "example_input.mp4"),
+            # Bundled resource directory (inside .app on macOS)
+            os.path.join(res_dir, "Example Videos", "example_input.mp4"),
+            # Legacy paths (next to the app / source)
             os.path.join(base_dir, "..", "Example Videos", "example_input.mp4"),
             os.path.join(base_dir, "Example Videos", "example_input.mp4"),
             os.path.join(os.getcwd(), "Example Videos", "example_input.mp4"),
@@ -554,6 +637,43 @@ class JetAnalysisGUI:
                 self.load_video(default_video)
                 break
         self.try_auto_load_startup_project()
+
+    def _set_app_icon(self):
+        """Set the window / dock icon using the best available format."""
+        res_dir = _get_resource_dir()
+        # When running from source, also check the project root (one level up).
+        root_dir = os.path.normpath(os.path.join(res_dir, ".."))
+
+        try:
+            if platform.system() == "Windows":
+                ico = os.path.join(res_dir, "icon.ico")
+                if os.path.isfile(ico):
+                    self.root.iconbitmap(ico)
+                return
+
+            # macOS / Linux — prefer PNG (best quality for dock/taskbar).
+            from PIL import Image, ImageTk
+
+            # Search order: icon_macos.png (styled), icon.png, icon.ico
+            candidates = [
+                os.path.join(root_dir, "icon_macos.png"),
+                os.path.join(res_dir, "icon_macos.png"),
+                os.path.join(root_dir, "icon.png"),
+                os.path.join(res_dir, "icon.png"),
+                os.path.join(res_dir, "icon.ico"),
+            ]
+            for path in candidates:
+                if os.path.isfile(path):
+                    img = Image.open(path).convert("RGBA")
+                    # Resize to a reasonable icon size if very large
+                    if max(img.size) > 512:
+                        img.thumbnail((512, 512), Image.LANCZOS)
+                    photo = ImageTk.PhotoImage(img)
+                    self.root.iconphoto(True, photo)
+                    self._app_icon_ref = photo  # prevent GC
+                    return
+        except Exception:
+            pass
 
     def configure_theme(self):
         self.root.configure(fg_color=self.APP_BG)
@@ -1957,7 +2077,16 @@ class JetAnalysisGUI:
     def select_video(self):
         if self.is_running:
             return
-        file = filedialog.askopenfilename(filetypes=INPUT_VIDEO_FILETYPES)
+        # Default to the user's Input Videos directory, fall back to last-used path
+        initial = self.video_path.get().strip()
+        if initial:
+            initial = os.path.dirname(initial)
+        if not initial or not os.path.isdir(initial):
+            initial = _get_input_videos_dir()
+        file = filedialog.askopenfilename(
+            filetypes=INPUT_VIDEO_FILETYPES,
+            initialdir=initial,
+        )
         if file:
             self.load_video(file)
 
@@ -4002,6 +4131,20 @@ class JetAnalysisGUI:
         self.reset_advanced_tab()
 
 if __name__ == "__main__":
+    # Work around Tcl/Tk 9.0 crash on macOS when launched as a .app bundle.
+    # The crash occurs in Tk_CreateConsoleWindow -> NSMenuItem initWithTitle
+    # because the app name resolves to nil during menu bar initialization.
+    if platform.system() == "Darwin":
+        # Suppress Tk console window creation (crashes with Tcl/Tk 9.0 in bundles)
+        os.environ.setdefault("TK_CONSOLE", "0")
+        # Ensure the process has a name for the macOS menu bar
+        try:
+            from ctypes import cdll, c_char_p
+            libc = cdll.LoadLibrary("libc.dylib")
+            libc.setprogname(c_char_p(b"Jet Centerline Analyzer"))
+        except Exception:
+            pass
+
     root = ctk.CTk()
     app = JetAnalysisGUI(root)
     root.mainloop()

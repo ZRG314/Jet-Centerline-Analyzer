@@ -39,6 +39,10 @@ class ProjectStateController:
         if not path_text:
             return ""
 
+        # Normalize Windows backslash separators so projects saved on Windows
+        # resolve correctly on macOS / Linux.
+        path_text = path_text.replace("\\", "/")
+
         normalized = os.path.normpath(path_text)
         if os.path.isabs(normalized) or not project_file_path:
             return normalized
@@ -122,7 +126,7 @@ class ProjectStateController:
         except OSError as exc:
             messagebox.showerror("Save failed", f"Could not save project:\n{exc}")
 
-    def apply_project_state(self, state, project_file_path=None):
+    def apply_project_state(self, state, project_file_path=None, silent=False):
         app = self.app
         if not isinstance(state, dict):
             raise ValueError("Invalid project file format.")
@@ -130,7 +134,7 @@ class ProjectStateController:
         video_path = self._resolve_project_path(state.get("video_path", ""), project_file_path)
         if video_path and os.path.isfile(video_path):
             app.load_video(video_path)
-        elif video_path:
+        elif video_path and not silent:
             messagebox.showwarning(
                 "Video not found",
                 f"Saved video path does not exist:\n{video_path}\n\nOther settings will still be loaded.",
@@ -280,18 +284,21 @@ class ProjectStateController:
         if app.is_running:
             return
         if getattr(sys, "frozen", False):
-            base_dir = os.path.dirname(sys.executable)
+            # On macOS .app bundles, data files are in Contents/Resources/
+            # (sys._MEIPASS), not next to the executable (Contents/MacOS/).
+            search_dirs = [sys._MEIPASS, os.path.dirname(sys.executable)]
         else:
-            base_dir = os.path.dirname(__file__)
-        for filename in self.startup_project_filenames:
-            file_path = os.path.normpath(os.path.join(base_dir, filename))
-            if not os.path.isfile(file_path):
-                continue
-            try:
-                with open(file_path, "r", encoding="utf-8") as handle:
-                    state = json.load(handle)
-                self.apply_project_state(state, project_file_path=file_path)
-                app.project_path = file_path
-                return
-            except (OSError, json.JSONDecodeError, ValueError):
-                return
+            search_dirs = [os.path.dirname(__file__)]
+        for base_dir in search_dirs:
+            for filename in self.startup_project_filenames:
+                file_path = os.path.normpath(os.path.join(base_dir, filename))
+                if not os.path.isfile(file_path):
+                    continue
+                try:
+                    with open(file_path, "r", encoding="utf-8") as handle:
+                        state = json.load(handle)
+                    self.apply_project_state(state, project_file_path=file_path, silent=True)
+                    app.project_path = file_path
+                    return
+                except (OSError, json.JSONDecodeError, ValueError):
+                    return
