@@ -4,7 +4,7 @@
 opencv-python>=4.13.0.92
 numpy>=2.4.4
 pillow>=12.2.0
-WMI>=1.5.1
+WMI>=1.5.1; sys_platform == "win32"
 pyinstaller>=6.19.0
 customtkinter>=5.2.2
 openpyxl>=3.1.5

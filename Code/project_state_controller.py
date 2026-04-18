@@ -39,6 +39,10 @@ class ProjectStateController:
         if not path_text:
             return ""
 
+        # Normalize Windows backslash separators so projects saved on Windows
+        # resolve correctly on macOS / Linux.
+        path_text = path_text.replace("\\", "/")
+
         normalized = os.path.normpath(path_text)
         if os.path.isabs(normalized) or not project_file_path:
             return normalized
@@ -122,7 +126,7 @@ class ProjectStateController:
         except OSError as exc:
             messagebox.showerror("Save failed", f"Could not save project:\n{exc}")
 
-    def apply_project_state(self, state, project_file_path=None):
+    def apply_project_state(self, state, project_file_path=None, silent=False):
         app = self.app
         if not isinstance(state, dict):
             raise ValueError("Invalid project file format.")
@@ -130,7 +134,7 @@ class ProjectStateController:
         video_path = self._resolve_project_path(state.get("video_path", ""), project_file_path)
         if video_path and os.path.isfile(video_path):
             app.load_video(video_path)
-        elif video_path:
+        elif video_path and not silent:
             messagebox.showwarning(
                 "Video not found",
                 f"Saved video path does not exist:\n{video_path}\n\nOther settings will still be loaded.",
@@ -290,7 +294,7 @@ class ProjectStateController:
             try:
                 with open(file_path, "r", encoding="utf-8") as handle:
                     state = json.load(handle)
-                self.apply_project_state(state, project_file_path=file_path)
+                self.apply_project_state(state, project_file_path=file_path, silent=True)
                 app.project_path = file_path
                 return
             except (OSError, json.JSONDecodeError, ValueError):
