@@ -1378,12 +1378,6 @@ class JetAnalysisGUI:
         )
         self.graph_units_label.pack(anchor="w", pady=(6, 0))
 
-        self.create_button(
-            graph_controls_left,
-            text="Reset Graph Tab",
-            command=self.reset_graph_tab
-        ).pack(anchor="w", pady=(10, 0))
-
         self.graph_view_header_row = self.labeled_header(graph_controls_far_right, "Graph View", pady=(0, 0))
         self.graph_view_combo = ttk.Combobox(
             graph_controls_far_right,
@@ -1423,17 +1417,30 @@ class JetAnalysisGUI:
         self.configure_histogram_scope_menu()
         self.attach_tooltip(self.graph_histogram_scope_combo, "Histogram Scope")
 
+        distribution_label_width = 20
+
         distribution_column_row = tk.Frame(graph_controls_outer_right, bg="white")
         distribution_column_row.pack(anchor="w", pady=(8, 0))
-        self.graph_distribution_column_label = tk.Label(distribution_column_row, text="Selected Column (px)", bg="white")
-        self.graph_distribution_column_label.pack(side="left")
+        self.graph_distribution_column_label = tk.Label(
+            distribution_column_row,
+            text="Selected Column (px)",
+            bg="white",
+            width=distribution_label_width,
+            anchor="w",
+        )
+        self.graph_distribution_column_label.grid(row=0, column=0, sticky="w")
         self.graph_distribution_column_entry = self.create_entry(
             distribution_column_row,
             textvariable=self.graph_distribution_column_px_var,
             width=80
         )
-        self.graph_distribution_column_entry.pack(side="left", padx=(8, 0))
+        self.graph_distribution_column_entry.grid(row=0, column=1, sticky="w", padx=(8, 0))
         self.attach_tooltip(self.graph_distribution_column_entry, "Distribution Column")
+        self.create_button(
+            distribution_column_row,
+            text="Reset Graph Tab",
+            command=self.reset_graph_tab
+        ).grid(row=0, column=2, sticky="w", padx=(16, 0))
         self.graph_distribution_column_bounds_label = tk.Label(
             graph_controls_outer_right,
             textvariable=self.graph_distribution_column_bounds_var,
@@ -1446,14 +1453,20 @@ class JetAnalysisGUI:
 
         distribution_bins_row = tk.Frame(graph_controls_outer_right, bg="white")
         distribution_bins_row.pack(anchor="w", pady=(6, 0))
-        self.graph_distribution_bins_label = tk.Label(distribution_bins_row, text="Histogram Bins", bg="white")
-        self.graph_distribution_bins_label.pack(side="left")
+        self.graph_distribution_bins_label = tk.Label(
+            distribution_bins_row,
+            text="Histogram Bins",
+            bg="white",
+            width=distribution_label_width,
+            anchor="w",
+        )
+        self.graph_distribution_bins_label.grid(row=0, column=0, sticky="w")
         self.graph_distribution_bins_entry = self.create_entry(
             distribution_bins_row,
             textvariable=self.graph_distribution_bins_var,
             width=80
         )
-        self.graph_distribution_bins_entry.pack(side="left", padx=(8, 0))
+        self.graph_distribution_bins_entry.grid(row=0, column=1, sticky="w", padx=(8, 0))
         self.attach_tooltip(self.graph_distribution_bins_entry, "Distribution Bins")
 
         tk.Label(
