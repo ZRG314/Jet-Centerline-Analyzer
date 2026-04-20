@@ -7,11 +7,9 @@ from camera_capture import create_camera_capture
 from analysis_engine import (
     threshold_frame,
     extract_centerline,
-    draw_instantaneous_centerline,
-    draw_confidence_region,
     compute_multi_thresholds,
     build_threshold_color_preview_filtered,
-    draw_mean_centerline,
+    compose_analysis_overlay,
     RunningStats,
     create_video_writer,
     build_threshold_output_frame,
@@ -327,28 +325,50 @@ class LiveEngine:
         
         # Get preview mode and display accordingly
         preview_mode = config.get('preview_mode', 'analysis')
-        show_analysis_overlay = config.get('show_analysis_overlay', True)
-        
-        analysis_frame = frame.copy()
-        analysis_frame = draw_instantaneous_centerline(analysis_frame, centerline_array)
-
         show_confidence = config.get('show_confidence', True)
-        if show_confidence:
-            stdevs = config.get('stdevs', 2)
-            confidence_mode = config.get('confidence_mode', 'band')
-            analysis_frame = draw_confidence_region(
-                analysis_frame,
+        stdevs = config.get('stdevs', 2)
+        confidence_mode = config.get('confidence_mode', 'band')
+        avg_thickness = config.get('avg_line_thickness', 2)
+
+        analysis_frame = compose_analysis_overlay(
+            frame,
+            centerline_array,
+            running_avg,
+            running_std,
+            show_instantaneous=True,
+            show_confidence=show_confidence,
+            show_mean=True,
+            stdevs=stdevs,
+            confidence_mode=confidence_mode,
+            avg_line_thickness=avg_thickness
+        )
+
+        output_analysis_frame = analysis_frame
+        if config.get('apply_preview_overlay_to_output', False):
+            output_analysis_frame = compose_analysis_overlay(
+                frame,
+                centerline_array,
                 running_avg,
                 running_std,
-                stdevs,
-                confidence_mode
+                show_instantaneous=config.get('show_preview_frame_dots', True),
+                show_confidence=show_confidence and config.get('show_preview_std_region', True),
+                show_mean=config.get('show_preview_mean_line', True),
+                stdevs=stdevs,
+                confidence_mode=confidence_mode,
+                avg_line_thickness=avg_thickness
             )
 
-        avg_thickness = config.get('avg_line_thickness', 2)
-        analysis_frame = draw_mean_centerline(
-            analysis_frame,
+        preview_analysis_frame = compose_analysis_overlay(
+            frame,
+            centerline_array,
             running_avg,
-            avg_thickness
+            running_std,
+            show_instantaneous=config.get('show_preview_frame_dots', True),
+            show_confidence=show_confidence and config.get('show_preview_std_region', True),
+            show_mean=config.get('show_preview_mean_line', True),
+            stdevs=stdevs,
+            confidence_mode=confidence_mode,
+            avg_line_thickness=avg_thickness
         )
 
         threshold_frame_bgr = build_threshold_output_frame(
@@ -362,11 +382,11 @@ class LiveEngine:
         if preview_mode == 'threshold':
             display_frame = threshold_frame_bgr
         elif preview_mode == 'analysis':
-            display_frame = analysis_frame if show_analysis_overlay else frame.copy()
+            display_frame = preview_analysis_frame
         else:
             display_frame = frame.copy()
 
-        return analysis_frame, threshold_frame_bgr, display_frame
+        return output_analysis_frame, threshold_frame_bgr, display_frame
 
     def _get_threshold_preview(self, frame, already_cropped=False):
         """Generate a threshold preview without full analysis."""

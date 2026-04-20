@@ -39,6 +39,8 @@ class StatusController:
         app.calibration_apply_button.configure(state=disabled_state)
         app.calibration_clear_button.configure(state=disabled_state)
         app.calibration_units_combo.configure(state="disabled" if running else "readonly")
+        if hasattr(app, "apply_preview_overlay_to_output_checkbox"):
+            app.apply_preview_overlay_to_output_checkbox.configure(state=disabled_state)
         app.save_crop_button.configure(state="disabled")
         app.reset_crop_button.configure(state=disabled_state)
         app.use_full_range_button.configure(state=disabled_state)

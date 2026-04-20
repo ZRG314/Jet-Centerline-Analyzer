@@ -53,6 +53,12 @@ class JetAnalysisConfig:
     multi_threshold_weights: Optional[list] = None
     multi_threshold_colors: Optional[list] = None
 
+    # Preview overlay settings that may optionally be reused for saved output
+    show_preview_std_region: bool = True
+    show_preview_frame_dots: bool = True
+    show_preview_mean_line: bool = True
+    apply_preview_overlay_to_output: bool = False
+
     # Frame range support
     start_frame: int = 0
     end_frame: int = None
@@ -319,6 +325,35 @@ def draw_mean_centerline(frame, running_avg, thickness):
     return frame
 
 
+def compose_analysis_overlay(frame, centerline_array, running_avg, running_std,
+                             *, show_instantaneous=True, show_confidence=True,
+                             show_mean=True, stdevs=2, confidence_mode="band",
+                             avg_line_thickness=2):
+    """Build a preview/output frame from the requested analysis overlay layers."""
+    analysis_frame = frame.copy()
+
+    if show_instantaneous:
+        analysis_frame = draw_instantaneous_centerline(analysis_frame, centerline_array)
+
+    if show_confidence:
+        analysis_frame = draw_confidence_region(
+            analysis_frame,
+            running_avg,
+            running_std,
+            stdevs,
+            confidence_mode
+        )
+
+    if show_mean:
+        analysis_frame = draw_mean_centerline(
+            analysis_frame,
+            running_avg,
+            avg_line_thickness
+        )
+
+    return analysis_frame
+
+
 # ==========================================
 # -------- MAIN PIPELINE -------------------
 # ==========================================
@@ -416,21 +451,27 @@ def process_video(config: JetAnalysisConfig,
             # Save raw frame before drawing overlays (for threshold preview)
             raw_frame = frame.copy()
 
-            frame = draw_instantaneous_centerline(frame, centerline_array)
-
-            if config.show_confidence:
-                frame = draw_confidence_region(
-                    frame,
-                    running_avg,
-                    running_std,
-                    config.stdevs,
-                    config.confidence_mode
+            output_show_dots = True
+            output_show_confidence = config.show_confidence
+            output_show_mean = True
+            if config.apply_preview_overlay_to_output:
+                output_show_dots = config.show_preview_frame_dots
+                output_show_confidence = (
+                    config.show_confidence and config.show_preview_std_region
                 )
+                output_show_mean = config.show_preview_mean_line
 
-            frame = draw_mean_centerline(
-                frame,
+            frame = compose_analysis_overlay(
+                raw_frame,
+                centerline_array,
                 running_avg,
-                config.avg_line_thickness
+                running_std,
+                show_instantaneous=output_show_dots,
+                show_confidence=output_show_confidence,
+                show_mean=output_show_mean,
+                stdevs=config.stdevs,
+                confidence_mode=config.confidence_mode,
+                avg_line_thickness=config.avg_line_thickness
             )
 
             binary_bgr = build_threshold_output_frame(
@@ -447,7 +488,16 @@ def process_video(config: JetAnalysisConfig,
                 out_threshold.write(binary_bgr)
 
             if preview_callback:
-                preview_callback(processed, frame, binary_bgr, adjusted_thresh, raw_frame)
+                preview_callback(
+                    processed,
+                    frame,
+                    binary_bgr,
+                    adjusted_thresh,
+                    raw_frame,
+                    centerline_array,
+                    running_avg,
+                    running_std,
+                )
 
         frame_index += 1
 

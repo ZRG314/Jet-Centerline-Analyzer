@@ -96,7 +96,10 @@ DEFAULTS = {
     "analysis_output_path": "",
     "threshold_output_path": "",
     "preview_mode": "analysis",
-    "show_analysis_overlay": True,
+    "show_preview_std_region": True,
+    "show_preview_frame_dots": True,
+    "show_preview_mean_line": True,
+    "apply_preview_overlay_to_output": False,
     "use_multi_threshold": False,
     "live_frame_limit": "",
     "num_thresholds": 1,
@@ -250,7 +253,10 @@ def normalize_app_defaults(saved_defaults):
     merged["save_analysis_output"] = bool(merged.get("save_analysis_output", DEFAULTS["save_analysis_output"]))
     merged["save_threshold_output"] = bool(merged.get("save_threshold_output", DEFAULTS["save_threshold_output"]))
     merged["show_best_fit"] = bool(merged.get("show_best_fit", DEFAULTS["show_best_fit"]))
-    merged["show_analysis_overlay"] = bool(merged.get("show_analysis_overlay", DEFAULTS["show_analysis_overlay"]))
+    merged["show_preview_std_region"] = bool(merged.get("show_preview_std_region", DEFAULTS["show_preview_std_region"]))
+    merged["show_preview_frame_dots"] = bool(merged.get("show_preview_frame_dots", DEFAULTS["show_preview_frame_dots"]))
+    merged["show_preview_mean_line"] = bool(merged.get("show_preview_mean_line", DEFAULTS["show_preview_mean_line"]))
+    merged["apply_preview_overlay_to_output"] = bool(merged.get("apply_preview_overlay_to_output", DEFAULTS["apply_preview_overlay_to_output"]))
     merged["use_multi_threshold"] = bool(merged.get("use_multi_threshold", DEFAULTS["use_multi_threshold"]))
 
     merged["preview_mode"] = merged.get("preview_mode") if merged.get("preview_mode") in ("analysis", "threshold") else DEFAULTS["preview_mode"]
@@ -342,7 +348,7 @@ class JetAnalysisGUI:
         "Frame Range Selection": "Choose the start and end frame to process. Drag red handles; start and end previews update as you move.",
         "Crop Controls": "Adjust the crop region directly on the preview, then press Save Crop to apply it for processing.",
         "Analyze Every N Frames": "Sample the selected frame range by analyzing every Nth frame. Use 1 for high detail and larger values for faster preview runs.",
-        "Pixels per Column": "Horizontal sampling step. Lower values sample more densely and may be slower.",
+        "Minimum detected pixels per column": "Minimum number of detected pixels required in a column before that column is counted in the result.",
         "Standard Deviations": "Controls confidence band width around the detected centerline. Higher values create a wider band.",
         "Graph Standard Deviations": "Controls the plotted band width around the final mean centerline profile.",
         "Graph View": "Switch between the profile graph, a histogram heatmap across all columns, and a normal Q-Q plot.",
@@ -391,7 +397,10 @@ class JetAnalysisGUI:
         self.analysis_output_path_var = tk.StringVar(value=self.app_defaults["analysis_output_path"])
         self.threshold_output_path_var = tk.StringVar(value=self.app_defaults["threshold_output_path"])
         self.preview_mode = tk.StringVar(value=self.app_defaults["preview_mode"])
-        self.show_analysis_overlay_var = tk.BooleanVar(value=self.app_defaults["show_analysis_overlay"])
+        self.show_preview_std_region_var = tk.BooleanVar(value=self.app_defaults["show_preview_std_region"])
+        self.show_preview_frame_dots_var = tk.BooleanVar(value=self.app_defaults["show_preview_frame_dots"])
+        self.show_preview_mean_line_var = tk.BooleanVar(value=self.app_defaults["show_preview_mean_line"])
+        self.apply_preview_overlay_to_output_var = tk.BooleanVar(value=self.app_defaults["apply_preview_overlay_to_output"])
         self.threshold_offset_var = tk.IntVar(value=self.app_defaults["threshold_offset"])
         self.live_frame_limit = tk.StringVar(value=self.app_defaults["live_frame_limit"])
 
@@ -461,6 +470,9 @@ class JetAnalysisGUI:
         self.last_analysis_frame = None
         self.last_raw_analysis_frame = None
         self.last_threshold_frame = None
+        self.last_centerline_array = None
+        self.last_running_avg = None
+        self.last_running_std = None
         self.last_display_frame = None
         self.last_raw_frame = None  # Raw uncropped frame from live camera
         self.current_preview_frame_index = 0
@@ -1022,15 +1034,22 @@ class JetAnalysisGUI:
         self.attach_tooltip(self.analyze_every_entry, "Analyze Every N Frames")
 
         self.pixel_entry = self.labeled_entry(
-            advanced_tab, "Pixels per Column", "pixels_per_col")
-        self.stdev_entry = self.labeled_entry(
-            advanced_tab, "Standard Deviations", "stdevs")
+            advanced_tab, "Minimum detected pixels per column", "pixels_per_col")
 
         self.create_button(advanced_tab, text="Reset Advanced Tab", command=self.reset_advanced_tab).pack(pady=10)
 
         # ================= THRESHOLD TAB =================
 
         self.labeled_header(self.threshold_tab, "Preview Mode", pady=(10, 5))
+        ctk.CTkRadioButton(
+            self.threshold_tab,
+            text="Threshold Preview",
+            variable=self.preview_mode,
+            value="threshold",
+            command=self.on_preview_mode_changed,
+            text_color=self.TEXT_COLOR,
+        ).pack(anchor="w", padx=8)
+
         ctk.CTkRadioButton(
             self.threshold_tab,
             text="Analysis Preview",
@@ -1040,23 +1059,50 @@ class JetAnalysisGUI:
             text_color=self.TEXT_COLOR,
         ).pack(anchor="w", padx=8)
 
-        self.show_analysis_overlay_checkbox = ctk.CTkCheckBox(
+        self.apply_preview_overlay_to_output_checkbox = ctk.CTkCheckBox(
             self.threshold_tab,
-            text="Show analysis overlay on preview",
-            variable=self.show_analysis_overlay_var,
+            text="Apply the following settings to saved output video:",
+            variable=self.apply_preview_overlay_to_output_var,
             command=self.on_analysis_overlay_toggle,
             text_color=self.TEXT_COLOR,
         )
-        self.show_analysis_overlay_checkbox.pack(anchor="w", padx=26, pady=(2, 0))
+        self.apply_preview_overlay_to_output_checkbox.pack(anchor="w", padx=26, pady=(2, 0))
 
-        ctk.CTkRadioButton(
+        self.show_preview_frame_dots_checkbox = ctk.CTkCheckBox(
             self.threshold_tab,
-            text="Threshold Preview",
-            variable=self.preview_mode,
-            value="threshold",
-            command=self.on_preview_mode_changed,
+            text="Show per-frame average",
+            variable=self.show_preview_frame_dots_var,
+            command=self.on_analysis_overlay_toggle,
             text_color=self.TEXT_COLOR,
-        ).pack(anchor="w", padx=8)
+        )
+        self.show_preview_frame_dots_checkbox.pack(anchor="w", padx=44, pady=(2, 0))
+
+        self.show_preview_mean_line_checkbox = ctk.CTkCheckBox(
+            self.threshold_tab,
+            text="Show average over time",
+            variable=self.show_preview_mean_line_var,
+            command=self.on_analysis_overlay_toggle,
+            text_color=self.TEXT_COLOR,
+        )
+        self.show_preview_mean_line_checkbox.pack(anchor="w", padx=44, pady=(2, 0))
+
+        std_region_row = ctk.CTkFrame(self.threshold_tab, fg_color="transparent")
+        std_region_row.pack(anchor="w", padx=44, pady=(2, 0))
+
+        self.show_preview_std_region_checkbox = ctk.CTkCheckBox(
+            std_region_row,
+            text="Show standard deviation region",
+            variable=self.show_preview_std_region_var,
+            command=self.on_analysis_overlay_toggle,
+            text_color=self.TEXT_COLOR,
+        )
+        self.show_preview_std_region_checkbox.pack(side="left")
+        self.attach_tooltip(self.show_preview_std_region_checkbox, "Standard Deviations")
+
+        self.stdev_entry = self.create_entry(std_region_row, width=56)
+        self.stdev_entry.insert(0, self.app_defaults.get("stdevs", DEFAULTS["stdevs"]))
+        self.stdev_entry.pack(side="left", padx=(8, 0))
+        self.attach_tooltip(self.stdev_entry, "Standard Deviations")
 
         # Create dummy labels for backward compatibility (no longer displayed)
         self.actual_threshold_label = ctk.CTkLabel(self.threshold_tab, text="")
@@ -2715,7 +2761,10 @@ class JetAnalysisGUI:
             'pixels_per_col': 1,
             'stdevs': 0,
             'preview_mode': self.preview_mode.get(),
-            'show_analysis_overlay': self.show_analysis_overlay_var.get(),
+            'show_preview_std_region': self.show_preview_std_region_var.get(),
+            'show_preview_frame_dots': self.show_preview_frame_dots_var.get(),
+            'show_preview_mean_line': self.show_preview_mean_line_var.get(),
+            'apply_preview_overlay_to_output': self.apply_preview_overlay_to_output_var.get(),
         }
         
         # Start preview without analysis (analysis_config has preview_mode)
@@ -2818,7 +2867,10 @@ class JetAnalysisGUI:
                 'show_confidence': True,
                 'confidence_mode': self.preview_mode.get() if self.preview_mode.get() == 'analysis' else 'band',
                 'preview_mode': self.preview_mode.get(),
-                'show_analysis_overlay': self.show_analysis_overlay_var.get(),
+                'show_preview_std_region': self.show_preview_std_region_var.get(),
+                'show_preview_frame_dots': self.show_preview_frame_dots_var.get(),
+                'show_preview_mean_line': self.show_preview_mean_line_var.get(),
+                'apply_preview_overlay_to_output': self.apply_preview_overlay_to_output_var.get(),
                 'max_frames': max_frames,
                 'use_multi_threshold': self.use_multi_threshold_var.get(),
                 'multi_threshold_offsets': self.get_multi_threshold_offsets(),
@@ -2965,8 +3017,18 @@ class JetAnalysisGUI:
         
         self.refresh_run_state()
 
-    def update_preview(self, processed_count, frame, binary_frame, threshold_value, raw_frame=None):
-        self.display_controller.update_preview(processed_count, frame, binary_frame, threshold_value, raw_frame)
+    def update_preview(self, processed_count, frame, binary_frame, threshold_value,
+                       raw_frame=None, centerline_array=None, running_avg=None, running_std=None):
+        self.display_controller.update_preview(
+            processed_count,
+            frame,
+            binary_frame,
+            threshold_value,
+            raw_frame,
+            centerline_array,
+            running_avg,
+            running_std,
+        )
 
     def on_threshold_changed(self, value):
         """Handle threshold slider changes with real-time preview update."""
@@ -3187,6 +3249,9 @@ class JetAnalysisGUI:
             config['multi_threshold_weights'] = weights
             config['multi_threshold_colors'] = colors
             config['preview_mode'] = self.preview_mode.get()
+            config['show_preview_std_region'] = self.show_preview_std_region_var.get()
+            config['show_preview_frame_dots'] = self.show_preview_frame_dots_var.get()
+            config['show_preview_mean_line'] = self.show_preview_mean_line_var.get()
 
         if self.is_running and self.current_analysis_config:
             self.current_analysis_config.threshold_offset = self.threshold_offset_var.get()
@@ -3233,10 +3298,18 @@ class JetAnalysisGUI:
             self.update_post_analysis_preview()
 
     def on_analysis_overlay_toggle(self):
-        """Show or hide the analysis overlay in preview mode."""
+        """Update analysis overlay settings for preview/output."""
         source = self.video_source_var.get()
         if source == "Live Camera" and self.live_engine and self.live_engine.analysis_config:
-            self.live_engine.analysis_config['show_analysis_overlay'] = self.show_analysis_overlay_var.get()
+            self.live_engine.analysis_config['show_preview_std_region'] = self.show_preview_std_region_var.get()
+            self.live_engine.analysis_config['show_preview_frame_dots'] = self.show_preview_frame_dots_var.get()
+            self.live_engine.analysis_config['show_preview_mean_line'] = self.show_preview_mean_line_var.get()
+            self.live_engine.analysis_config['apply_preview_overlay_to_output'] = self.apply_preview_overlay_to_output_var.get()
+        if self.is_running and self.current_analysis_config:
+            self.current_analysis_config.show_preview_std_region = self.show_preview_std_region_var.get()
+            self.current_analysis_config.show_preview_frame_dots = self.show_preview_frame_dots_var.get()
+            self.current_analysis_config.show_preview_mean_line = self.show_preview_mean_line_var.get()
+            self.current_analysis_config.apply_preview_overlay_to_output = self.apply_preview_overlay_to_output_var.get()
         self.update_post_analysis_preview()
 
     def update_post_analysis_preview(self):
@@ -3301,7 +3374,10 @@ class JetAnalysisGUI:
             "analysis_output_path": self.analysis_output_path_var.get().strip(),
             "threshold_output_path": self.threshold_output_path_var.get().strip(),
             "preview_mode": self.preview_mode.get(),
-            "show_analysis_overlay": self.show_analysis_overlay_var.get(),
+            "show_preview_std_region": self.show_preview_std_region_var.get(),
+            "show_preview_frame_dots": self.show_preview_frame_dots_var.get(),
+            "show_preview_mean_line": self.show_preview_mean_line_var.get(),
+            "apply_preview_overlay_to_output": self.apply_preview_overlay_to_output_var.get(),
             "live_frame_limit": self.live_frame_limit.get().strip(),
             "num_thresholds": self.num_thresholds_var.get(),
             "graph_stdevs": self.graph_stdevs_var.get().strip(),
@@ -3370,7 +3446,10 @@ class JetAnalysisGUI:
         self.refresh_output_controls_state()
 
         self.preview_mode.set(self.app_defaults["preview_mode"])
-        self.show_analysis_overlay_var.set(self.app_defaults["show_analysis_overlay"])
+        self.show_preview_std_region_var.set(self.app_defaults["show_preview_std_region"])
+        self.show_preview_frame_dots_var.set(self.app_defaults["show_preview_frame_dots"])
+        self.show_preview_mean_line_var.set(self.app_defaults["show_preview_mean_line"])
+        self.apply_preview_overlay_to_output_var.set(self.app_defaults["apply_preview_overlay_to_output"])
         self.threshold_offset_var.set(self.app_defaults["threshold_offset"])
         self.threshold_value_label.configure(text=str(self.app_defaults["threshold_offset"]))
         self.use_multi_threshold_var.set(self.app_defaults["use_multi_threshold"])
@@ -3434,7 +3513,10 @@ class JetAnalysisGUI:
 
     def reset_threshold_tab(self):
         self.preview_mode.set(self.app_defaults["preview_mode"])
-        self.show_analysis_overlay_var.set(self.app_defaults["show_analysis_overlay"])
+        self.show_preview_std_region_var.set(self.app_defaults["show_preview_std_region"])
+        self.show_preview_frame_dots_var.set(self.app_defaults["show_preview_frame_dots"])
+        self.show_preview_mean_line_var.set(self.app_defaults["show_preview_mean_line"])
+        self.apply_preview_overlay_to_output_var.set(self.app_defaults["apply_preview_overlay_to_output"])
         self.threshold_offset_var.set(self.app_defaults["threshold_offset"])
         self.threshold_value_label.configure(text=str(self.app_defaults["threshold_offset"]))
         self.use_multi_threshold_var.set(self.app_defaults["use_multi_threshold"])
@@ -3725,6 +3807,9 @@ class JetAnalysisGUI:
         self.last_analysis_frame = None
         self.last_raw_analysis_frame = None
         self.last_threshold_frame = None
+        self.last_centerline_array = None
+        self.last_running_avg = None
+        self.last_running_std = None
         self.last_raw_frame = None
         self.final_mean_profile = None
         self.final_std_profile = None
@@ -3816,6 +3901,10 @@ class JetAnalysisGUI:
             multi_threshold_offsets=self.get_multi_threshold_offsets(),
             multi_threshold_weights=self.get_multi_threshold_weights(),
             multi_threshold_colors=self.get_multi_threshold_colors(),
+            show_preview_std_region=self.show_preview_std_region_var.get(),
+            show_preview_frame_dots=self.show_preview_frame_dots_var.get(),
+            show_preview_mean_line=self.show_preview_mean_line_var.get(),
+            apply_preview_overlay_to_output=self.apply_preview_overlay_to_output_var.get(),
             start_frame=start,
             end_frame=end
         )

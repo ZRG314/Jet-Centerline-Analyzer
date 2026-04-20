@@ -66,6 +66,10 @@ class ProjectStateController:
             "pixels_per_col": app.pixel_entry.get().strip(),
             "stdevs": app.stdev_entry.get().strip(),
             "preview_mode": app.preview_mode.get().strip(),
+            "show_preview_std_region": bool(app.show_preview_std_region_var.get()),
+            "show_preview_frame_dots": bool(app.show_preview_frame_dots_var.get()),
+            "show_preview_mean_line": bool(app.show_preview_mean_line_var.get()),
+            "apply_preview_overlay_to_output": bool(app.apply_preview_overlay_to_output_var.get()),
             "start_frame": int(app.start_frame_var.get()),
             "end_frame": int(app.end_frame_var.get()),
             "current_preview_frame_index": int(app.current_preview_frame_index),
@@ -164,6 +168,10 @@ class ProjectStateController:
         preview_mode = str(state.get("preview_mode", app.preview_mode.get())).strip()
         if preview_mode in ("analysis", "threshold"):
             app.preview_mode.set(preview_mode)
+        app.show_preview_std_region_var.set(bool(state.get("show_preview_std_region", app.show_preview_std_region_var.get())))
+        app.show_preview_frame_dots_var.set(bool(state.get("show_preview_frame_dots", app.show_preview_frame_dots_var.get())))
+        app.show_preview_mean_line_var.set(bool(state.get("show_preview_mean_line", app.show_preview_mean_line_var.get())))
+        app.apply_preview_overlay_to_output_var.set(bool(state.get("apply_preview_overlay_to_output", app.apply_preview_overlay_to_output_var.get())))
 
         app.graph_stdevs_var.set(str(state.get("graph_stdevs", app.graph_stdevs_var.get())).strip())
         app.graph_fit_degree_var.set(str(state.get("graph_fit_degree", app.graph_fit_degree_var.get())).strip())

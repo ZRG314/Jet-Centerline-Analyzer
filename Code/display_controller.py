@@ -164,7 +164,34 @@ class DisplayController:
             return frame
         return app.apply_saved_crop_to_frame(frame)
 
-    def update_preview(self, processed_count, frame, binary_frame, threshold_value, raw_frame=None):
+    def render_analysis_preview_frame(self, source_frame):
+        app = self.app
+        if source_frame is None:
+            return None
+
+        centerline = getattr(app, "last_centerline_array", None)
+        running_avg = getattr(app, "last_running_avg", None)
+        running_std = getattr(app, "last_running_std", None)
+        if centerline is None or running_avg is None or running_std is None:
+            return None
+
+        from analysis_engine import compose_analysis_overlay
+
+        return compose_analysis_overlay(
+            source_frame,
+            centerline,
+            running_avg,
+            running_std,
+            show_instantaneous=app.show_preview_frame_dots_var.get(),
+            show_confidence=app.show_preview_std_region_var.get(),
+            show_mean=app.show_preview_mean_line_var.get(),
+            stdevs=max(0, app.safe_int(app.stdev_entry.get()) or app.app_defaults["stdevs"]),
+            confidence_mode="band",
+            avg_line_thickness=2,
+        )
+
+    def update_preview(self, processed_count, frame, binary_frame, threshold_value,
+                       raw_frame=None, centerline_array=None, running_avg=None, running_std=None):
         app = self.app
         app.frame_counter = processed_count
         app.root.after(0, lambda: app.progress.configure(value=app.frame_counter))
@@ -182,6 +209,9 @@ class DisplayController:
         app.last_threshold_frame = binary_frame.copy()
         if raw_frame is not None:
             app.last_raw_analysis_frame = raw_frame.copy()
+        app.last_centerline_array = centerline_array.copy() if centerline_array is not None else None
+        app.last_running_avg = running_avg.copy() if running_avg is not None else None
+        app.last_running_std = running_std.copy() if running_std is not None else None
 
         app.root.after(0, app.update_post_analysis_preview)
 
@@ -190,11 +220,15 @@ class DisplayController:
         preview_mode = app.preview_mode.get()
 
         if preview_mode == "analysis":
-            if app.show_analysis_overlay_var.get() and app.last_analysis_frame is not None:
+            if app.last_analysis_frame is not None:
+                source_frame = app.last_raw_analysis_frame
+                if source_frame is None and app.original_crop_frame is not None:
+                    source_frame = app.prepare_preview_frame(app.original_crop_frame.copy())
+                rendered_frame = self.render_analysis_preview_frame(source_frame)
+                if rendered_frame is not None:
+                    app.display_frame(rendered_frame)
+                    return
                 app.display_frame(app.last_analysis_frame)
-                return
-            if app.last_raw_analysis_frame is not None:
-                app.display_frame(app.last_raw_analysis_frame)
                 return
             if app.original_crop_frame is not None:
                 app.display_frame(app.prepare_preview_frame(app.original_crop_frame.copy()))
