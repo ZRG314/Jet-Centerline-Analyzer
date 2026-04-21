@@ -100,7 +100,7 @@ DEFAULTS = {
     "show_preview_frame_dots": True,
     "show_preview_mean_line": True,
     "apply_preview_overlay_to_output": False,
-    "use_multi_threshold": False,
+    "use_multi_threshold": True,
     "live_frame_limit": "",
     "num_thresholds": 1,
     "graph_stdevs": "2",
@@ -257,7 +257,7 @@ def normalize_app_defaults(saved_defaults):
     merged["show_preview_frame_dots"] = bool(merged.get("show_preview_frame_dots", DEFAULTS["show_preview_frame_dots"]))
     merged["show_preview_mean_line"] = bool(merged.get("show_preview_mean_line", DEFAULTS["show_preview_mean_line"]))
     merged["apply_preview_overlay_to_output"] = bool(merged.get("apply_preview_overlay_to_output", DEFAULTS["apply_preview_overlay_to_output"]))
-    merged["use_multi_threshold"] = bool(merged.get("use_multi_threshold", DEFAULTS["use_multi_threshold"]))
+    merged["use_multi_threshold"] = True
 
     merged["preview_mode"] = merged.get("preview_mode") if merged.get("preview_mode") in ("analysis", "threshold") else DEFAULTS["preview_mode"]
     merged["calibration_units"] = merged.get("calibration_units") if merged.get("calibration_units") in ("mm", "cm", "in") else DEFAULTS["calibration_units"]
@@ -798,7 +798,7 @@ class JetAnalysisGUI:
 
         self.notebook.add(basic_tab, text="Basic")
         self.notebook.add(self.threshold_tab, text="Threshold")
-        self.notebook.add(advanced_tab, text="Advanced")
+        self.notebook.add(advanced_tab, text="Frame Range")
         self.notebook.add(self.crop_tab, text="Crop")
         self.notebook.add(self.calibration_tab, text="Calibration")
         self.notebook.add(self.graph_tab, text="Graphs")
@@ -1033,12 +1033,11 @@ class JetAnalysisGUI:
         self.attach_tooltip(analyze_every_label, "Analyze Every N Frames")
         self.attach_tooltip(self.analyze_every_entry, "Analyze Every N Frames")
 
-        self.pixel_entry = self.labeled_entry(
-            advanced_tab, "Minimum detected pixels per column", "pixels_per_col")
-
-        self.create_button(advanced_tab, text="Reset Advanced Tab", command=self.reset_advanced_tab).pack(pady=10)
+        self.create_button(advanced_tab, text="Reset Frame Selection Tab", command=self.reset_advanced_tab).pack(pady=10)
 
         # ================= THRESHOLD TAB =================
+
+        self.use_multi_threshold_var.set(True)
 
         self.labeled_header(self.threshold_tab, "Preview Mode", pady=(10, 5))
         ctk.CTkRadioButton(
@@ -1110,15 +1109,9 @@ class JetAnalysisGUI:
         self.threshold_scale = None
 
         self.labeled_header(self.threshold_tab, "Threshold Mode", pady=(15, 5))
-        
-        self.use_multi_threshold_checkbox = ctk.CTkCheckBox(
-            self.threshold_tab,
-            text="Use Multi-Threshold",
-            variable=self.use_multi_threshold_var,
-            command=self.on_threshold_mode_toggle,
-            text_color=self.TEXT_COLOR,
-        )
-        self.use_multi_threshold_checkbox.pack(anchor="w", padx=8)
+
+        self.pixel_entry = self.labeled_entry(
+            self.threshold_tab, "Minimum detected pixels per column", "pixels_per_col")
 
         num_thresholds_frame = ctk.CTkFrame(self.threshold_tab, fg_color="transparent")
         num_thresholds_frame.pack(anchor="w", padx=8, pady=(10, 0))
@@ -3519,7 +3512,8 @@ class JetAnalysisGUI:
         self.apply_preview_overlay_to_output_var.set(self.app_defaults["apply_preview_overlay_to_output"])
         self.threshold_offset_var.set(self.app_defaults["threshold_offset"])
         self.threshold_value_label.configure(text=str(self.app_defaults["threshold_offset"]))
-        self.use_multi_threshold_var.set(self.app_defaults["use_multi_threshold"])
+        self.use_multi_threshold_var.set(True)
+        self._set_entry_text(self.pixel_entry, self.app_defaults["pixels_per_col"])
         self.num_thresholds_var.set(self.app_defaults["num_thresholds"])
         for idx, offset_val in enumerate(self.app_defaults["multi_threshold_offsets"]):
             self.multi_threshold_offsets[idx].set(offset_val)
@@ -3539,8 +3533,6 @@ class JetAnalysisGUI:
 
     def reset_advanced_tab(self):
         self._set_entry_text(self.analyze_every_entry, self.app_defaults["frame_stride"])
-        self._set_entry_text(self.pixel_entry, self.app_defaults["pixels_per_col"])
-        self._set_entry_text(self.stdev_entry, self.app_defaults["stdevs"])
         if self.total_frames > 0:
             self.apply_range(0, self.total_frames - 1)
         self.refresh_run_state()
